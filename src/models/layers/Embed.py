@@ -55,7 +55,6 @@ class PatchTokenEmbedding(nn.Module):
         def __init__(self, c_in, d_model,patch_len=12,stride =12):
             super(PatchTokenEmbedding, self).__init__()
             padding = 1 if torch.__version__ >= '1.5.0' else 2
-            self.patchify = Patchify(patch_len,stride)
             self.tokenConv = nn.Conv1d(in_channels=c_in*patch_len, out_channels=d_model,
                                     kernel_size=3, padding=padding, padding_mode='circular', bias=False)
             self.stride = stride
@@ -203,7 +202,17 @@ class Patch_Emb(nn.Module):
 
         # x:tensor[bs x n_patches x d_model]
         return x
-    
+
+class Decoder_Emb(nn.Module):
+
+    def __init__(self, c_in, d_model):
+        super(Decoder_Emb, self).__init__()
+        self.value_embedding = TokenEmbedding(c_in=c_in, d_model=d_model)
+        self.position_embedding = LearnedPositionEncoding(c_in)
+    def forward(self, x):
+        x = self.value_embedding(x+ self.position_embedding(x))
+        return x
+
 if __name__ == '__main__':
     
     x = torch.zeros(4, 400, 13)
