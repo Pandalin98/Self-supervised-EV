@@ -44,11 +44,7 @@ class SetupLearnerCB(Callback):
     def before_batch_test(self): self._to_device()
 
     def _to_device(self):
-        ##合并batch中的feature和wc为feature,并删除wc
-        self.batch['feature'] = torch.cat([self.batch['feature'], self.batch['WC']], dim=-1)
-        del self.batch['WC']
         batch = to_device(self.batch, self.device) 
-                 
         self.learner.batch = batch
         
     def before_fit(self): 

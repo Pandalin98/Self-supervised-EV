@@ -16,7 +16,7 @@ from collections import OrderedDict
 from src.models.layers.pos_encoding import *
 from src.models.layers.basics import *
 from src.models.layers.attention import *
-from src.models.layers.Embed import Patch_Emb,Decoder_Emb
+from src.models.layers.Embed import Patch_Emb,Decoder_Emb,TemporalEmbedding
 from src.models.layers.SelfAttention_Family import AttentionLayer, FullAttention
 
 # Cell
@@ -37,7 +37,7 @@ class Fusing_PatchTST(nn.Module):
          [bs xcl x np x fl*pl] for pretrain
     """
         ##对head进行修改，修改输入输出的dim
-    def __init__(self, c_in:int,c_in_dec: int , target_dim:int, patch_len:int, stride:int,  
+    def __init__(self, c_in:int , patch_len:int, stride:int,c_in_dec=1 ,  target_dim =1,
                  n_layers:int=3, n_layers_dec=1,d_model=128, n_heads=16, n_heads_dec = 8,shared_embedding=True, d_ff:int=256, 
                  norm:str='BatchNorm', attn_dropout:float=0., dropout:float=0., act:str="gelu", 
                  res_attention:bool=True, pre_norm:bool=False, store_attn:bool=False,
@@ -56,6 +56,7 @@ class Fusing_PatchTST(nn.Module):
                                 res_attention=res_attention, pre_norm=pre_norm, store_attn=store_attn,
                                 pe=pe, learn_pe=learn_pe, verbose=verbose, **kwargs)
         # todo 后期需要创一个带日期的embedding
+    
         self.dec_emb = Decoder_Emb(c_in_dec,d_model)
         self.decoder = TransformerDecoder(
             TransformerDecoderLayer(
@@ -68,6 +69,7 @@ class Fusing_PatchTST(nn.Module):
             norm=nn.Sequential(Transpose(1,2), nn.BatchNorm1d(d_model), Transpose(1,2)) if norm=='BatchNorm'
             else nn.LayerNorm(d_model))
         self.output_attention = output_attention
+        self.TemporalEmbedding = TemporalEmbedding(d_model=d_model)
         # Head
         self.n_vars = c_in
         self.head_type = head_type
@@ -88,10 +90,13 @@ class Fusing_PatchTST(nn.Module):
             self.head = ClassificationHead(self.n_vars, d_model, target_dim, head_dropout)
         self.out_put_projection = nn.Linear(d_model, 1)
 
-    def forward(self, enc_in,prior,dec_in):                             
+    def forward(self, enc_in,prior,dec_in,enc_mark):                             
         """
         input:
-        z: tensor [bs x cl x np x fl * pl]
+        enc_in: tensor [bs x cl x np x fl * pl]
+        enc_mark tensor [bs x cl x 4]
+
+        prior: tensor [bs x cl x prior_dim]
         output:
         # z: [bs x target_dim x nvars] for prediction
         #    [bs x target_dim] for regression
@@ -104,8 +109,10 @@ class Fusing_PatchTST(nn.Module):
             prior = self.prior_projection(prior)
             z_enc = self.backbone(enc_in)                                                                # z: [bs x nvars x d_model x num_patch]
             con1 = self.head_cons1_1(self.head_cons1(z_enc))
-            con2 = self.head_cons2(prior)
-            re = self.head_re(z_enc)     
+            con2 = self.head_cons2(prior.view(bs*cl,self.d_model))
+            ##con2 复制cl次
+
+            re = self.head_re(z_enc).view(bs,cl,np,-1)     
             return re,con1,con2 
         else:
             z_enc = self.backbone(enc_in) #[bs*cl, np, d_model]
@@ -115,12 +122,14 @@ class Fusing_PatchTST(nn.Module):
                 z_enc_out = self.head(z_enc,prior)
             else:
                 z_enc_out = self.head(z_enc)
-            z_enc_out=z_enc_out.view(bs,cl,self.d_model)
-        dec_in  = self.dec_emb(dec_in)
-        output = self.decoder( dec_in.transpose(0,1),z_enc_out.transpose(0,1)).transpose(0,1)
-        y = self.out_put_projection(output)         # y: bs x output_dim
-        if self.y_range: y = SigmoidRange(*self.y_range)(y)        
-        return y.squeeze(-1)
+            
+            z_enc_out=z_enc_out.view(bs,cl,self.d_model)  
+            z_enc_out = z_enc_out+self.TemporalEmbedding(enc_mark)
+            dec_in = self.TemporalEmbedding(dec_in[:,:,:4])+self.dec_emb(dec_in[:,:,4:])
+            output = self.decoder( dec_in.transpose(0,1),z_enc_out.transpose(0,1)).transpose(0,1)
+            y = self.out_put_projection(output)         # y: bs x output_dim
+            if self.y_range: y = SigmoidRange(*self.y_range)(y)        
+            return y.squeeze(-1)
 
 class FFN(nn.Module):
     """基于位置的前馈网络"""
@@ -493,8 +502,9 @@ if __name__ == '__main__':
     
     x = torch.zeros(3,4, 3, 400) #bs x cl x np x fl*pl
     prior = torch.zeros(3,4,1) 
-    x_dec = torch.zeros(3,6,5)
-    model = Fusing_PatchTST(c_in=4,c_in_dec =5,
+    x_dec = torch.ones(3,6,5)
+    x_mark = torch.ones(3,4,4)
+    model = Fusing_PatchTST(c_in=4,c_in_dec =1,
                 target_dim=1,
                 patch_len=100,
                 stride=12,
@@ -509,4 +519,4 @@ if __name__ == '__main__':
                 head_type='prior_pooler',
                 res_attention=False
                 )        
-    print(model.forward(x,prior,x_dec).shape)
+    print(model.forward(x,prior,x_dec,x_mark).shape)

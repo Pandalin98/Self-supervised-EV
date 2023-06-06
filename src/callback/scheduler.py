@@ -59,10 +59,13 @@ class OneCycleLR(Callback):
                                             )
 
     def after_batch_train(self):
-        if self.model.training: 
-            self.scheduler.step()
-            self.lrs.append( self.scheduler.get_last_lr()[0] )                  
-
+        if self.model.training:
+            #如果出错就跳过 
+            try :
+                self.scheduler.step()
+                self.lrs.append(self.scheduler.get_last_lr()[0] )                  
+            except:
+                pass
     def after_fit(self):        
         self.learner.scheduled_lrs = self.lrs
                 

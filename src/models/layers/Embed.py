@@ -99,6 +99,7 @@ class FixedEmbedding(nn.Module):
         self.emb.weight = nn.Parameter(w, requires_grad=False)
 
     def forward(self, x):
+        ##x增加一维度在最后一维度上
         return self.emb(x).detach()
 
 
@@ -113,8 +114,7 @@ class TemporalEmbedding(nn.Module):
         month_size = 13
 
         Embed = FixedEmbedding if embed_type == 'fixed' else nn.Embedding
-        if freq == 't':
-            self.minute_embed = Embed(minute_size, d_model)
+
         self.hour_embed = Embed(hour_size, d_model)
         self.weekday_embed = Embed(weekday_size, d_model)
         self.day_embed = Embed(day_size, d_model)
@@ -122,14 +122,28 @@ class TemporalEmbedding(nn.Module):
 
     def forward(self, x):
         x = x.long()
-
-        minute_x = self.minute_embed(x[:, :, 4]) if hasattr(self, 'minute_embed') else 0.
         hour_x = self.hour_embed(x[:, :, 3])
-        weekday_x = self.weekday_embed(x[:, :, 2])
-        day_x = self.day_embed(x[:, :, 1])
+        day_x = self.day_embed(x[:, :, 2])
+        weekday_x = self.weekday_embed(x[:, :, 1])
         month_x = self.month_embed(x[:, :, 0])
 
-        return hour_x + weekday_x + day_x + month_x + minute_x
+        return hour_x + weekday_x + day_x + month_x
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class TimeFeatureEmbedding(nn.Module):

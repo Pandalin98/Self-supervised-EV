@@ -126,15 +126,18 @@ class Learner(GetAttr):
         z1 = F.normalize(z1, p=2, dim=1)
         z2 = F.normalize(z2, p=2, dim=1)
         z = torch.cat([z1, z2], dim=0)
-        # z = self.Mask_Dropout(z)
-        contrast_projection = z
-        sim = torch.matmul(contrast_projection, contrast_projection.T) / self.constrast_temp
-        logits = torch.tril(sim, diagonal=-1)[:, :-1]  # 2B x (2B-1)
-        logits += torch.triu(sim, diagonal=1)[:, 1:]
-        logits = -F.log_softmax(logits, dim=-1)
-        i = torch.arange(B, device=z1.device)
-        contrast_loss = (logits[i, B + i - 1].mean() + logits[B + i, i].mean()) / 2
-        return contrast_loss
+        
+        # 计算相似度矩阵
+        sim = torch.matmul(z, z.T) / self.constrast_temp
+        diag_mask = torch.eye(2 * B, device=z.device, dtype=torch.bool)
+        sim = sim.masked_fill_(diag_mask, float('-inf'))  # 掩盖对角线元素
+        
+        # 计算损失
+        logits = F.log_softmax(sim, dim=-1)
+        contrast_loss = (logits.diagonal(B).mean() + logits.diagonal(-B).mean()) / 2
+        
+        return -contrast_loss
+
 
     def fit_pretrain(self, n_epochs, lr_max=None, lr=None,cbs=None, do_valid=False, pct_start=0.3):
         " fit the model based on the pretrain loss "
@@ -155,11 +158,10 @@ class Learner(GetAttr):
                 for num,batch in enumerate(self.dl):
                     self.iter, self.batch = num, batch
                     self('before_batch_train')
-                    self.xb, self.target,self.prior = self.batch['feature'],self.batch['feature'],self.batch['prior']
-        
+                    self.xb, self.target,self.prior,self.xb_mark,self.xb_dec = self.batch['encoder_input'],self.batch['label'],self.batch['prior'],self.batch['encoder_mark'],self.batch['decoder_input']
                     # forward
                     self('before_forward')
-                    pred,con1,con2 = self.model(self.xb,self.prior)
+                    pred,con1,con2 = self.model(self.xb,self.prior,self.xb_dec,self.xb_mark)
                     self('after_forward')
                     # compute loss
                     pretrain_loss,recon_loss,kl_loss = self.pretrain_loss_func(pred, self.target,con1,con2)
@@ -197,10 +199,9 @@ class Learner(GetAttr):
                 for num,batch in enumerate(self.dl):
                     self.iter, self.batch = num, batch
                     self('before_batch_train')
-                    self.xb, self.target,self.prior = self.batch['feature'],self.batch['label'],self.batch['prior']
-                    # forward
+                    self.xb, self.target,self.prior,self.xb_mark,self.xb_dec = self.batch['encoder_input'],self.batch['label'],self.batch['prior'],self.batch['encoder_mark'],self.batch['decoder_input']                    # forward
                     self('before_forward')
-                    pred = self.model(self.xb,self.prior)
+                    pred = self.model(self.xb,self.prior,self.xb_dec,self.xb_mark)
                     self('after_forward')
                     # compute loss
                     down_stream_loss = loss_func(pred, self.target)
@@ -232,7 +233,7 @@ class Learner(GetAttr):
         n_epochs_head = int(n_epochs*head_epoch_ratio)
         n_epochs = n_epochs - n_epochs_head
         if n_epochs_head > 0:
-            print('Finetune the head')
+            print('Finetune the head and decoder')
             self.freeze()
             self.fit_downstreams(n_epochs_head,loss_func=loss_func, lr_max=base_lr, pct_start=pct_start)
         
@@ -324,7 +325,7 @@ class Learner(GetAttr):
         
     def model_forward(self):
         self('before_forward')
-        self.pred = self.model(self.xb,self.prior)
+        self.pred = self.model(self.xb,self.prior,self.xb_dec,self.xb_mark)
         self('after_forward')
         return self.pred
 
@@ -334,7 +335,7 @@ class Learner(GetAttr):
 
     def valid_step(self, batch):
         # get the inputs
-        self.xb, self.target,self.prior =   batch['feature'],batch['label'],batch['prior']
+        self.xb, self.target,self.prior,self.xb_mark,self.xb_dec = self.batch['encoder_input'],self.batch['label'],self.batch['prior'],self.batch['encoder_mark'],self.batch['decoder_input']                    # forward
 
         # forward
         pred = self.model_forward()

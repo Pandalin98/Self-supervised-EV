@@ -10,14 +10,27 @@ from src.data.datamodule import DataLoaders
 from src.data.CALCE_Battary import CALCE_dataset
 from src.data.engine import Engine
 from src.data.NASA_battery import NASA_Battery
-
-
-DSETS = ['N-MAPPS', 'CALCE_Battery', 'NASA_Battery']
+from src.power_battery import PowerBatteryData
+DSETS = ['N-MAPPS', 'CALCE_Battery', 'NASA_Battery','Power-Battery']
 
 def get_dls(params):
     
     assert params.dset in DSETS, f"Unrecognized dset (`{params.dset}`). Options include: {DSETS}"
     if not hasattr(params,'use_time_features'): params.use_time_features = False
+    if params.dset == 'Power-Battery':
+        root_path = 'datasets/Power-Battery/'
+        dls = DataLoaders(
+            datasetCls=PowerBatteryData,
+            dataset_kwargs={
+                'data_path': params.data_path,
+                'scale': params.scale,
+                'size':[params.input_len,params.output_len],
+                },
+                batch_size=params.batch_size,
+                workers=params.num_workers,
+                distrubuted=params.dist,
+                flag =params.task_flag,
+                )
 
     if params.dset == 'N-MAPPS':
         root_path = 'datasets/N-MAPPS/'
@@ -83,22 +96,21 @@ def get_dls(params):
                 )
 
     # dataset is assume to have dimension len x nvars
-    dls.vars = dls.train.dataset.__getitem__(0)['feature'].shape[-1]+dls.train.dataset.__getitem__(0)['WC'].shape[-1]
+    dls.vars = dls.train.dataset.__getitem__(0)['encoder_input'].shape[-1]
     return dls
-
-
 
 if __name__ == "__main__":
     class Params:
-        dset= 'CALCE_Battery'
-        out_sample_rate= 1
-        inside_sample_rate= 1
+        dset= 'Power-Battery'
+        data_path = './data/local_data_structure'
+        scale = True
+        input_len = 24
+        label_len = 12
+        output_len = 3
         batch_size= 64
-        data_sort = True
-        snr = 0
         num_workers= 32
         dist = False
-        task_flag = 'pretrain'
+        task_flag = 'train'
         target_points = 10
 
     params = Params 

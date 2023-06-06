@@ -23,8 +23,10 @@ class PatchCB(Callback):
         """
         take xb from learner and convert to patch: [bs x seq_len × nvars] -> [bs x num_patch x patch_len*nvars]
         """
-        xb_patch, num_patch = create_patch(self.xb, self.patch_len, self.stride)    # xb: [bs x seq_len × nvars ]
-        self.learner.xb = xb_patch                              # xb_patch: [bs x num_patch x patch_len*nvars]        
+        bs,cl,tl,fl = self.xb.shape
+        xb = self.xb.reshape(bs*cl,tl,fl)
+        xb_patch, num_patch = create_patch(xb, self.patch_len, self.stride)    # xb: [bs x seq_len × nvars ]
+        self.learner.xb = xb_patch.reshape(bs,cl,num_patch,-1)                              # xb_patch: [bs x cl x num_patch x patch_len*nvars]        
 
 
 class PatchMaskCB(Callback):
@@ -50,11 +52,13 @@ class PatchMaskCB(Callback):
         """
         xb: [bs x seq_len x n_vars] -> [bs x num_patch x patch_len]
         """
-        xb_patch, num_patch = create_patch(self.xb, self.patch_len, self.stride)    # xb_patch: [bs x num_patch x patch_len]
+        bs,cl,tl,fl = self.xb.shape
+        xb = self.xb.reshape(bs*cl,tl,fl)
+        xb_patch, num_patch = create_patch(xb, self.patch_len, self.stride)    # xb_patch: [bs x num_patch x patch_len]
         xb_mask, _, self.mask, _ = random_masking_3D(xb_patch, self.mask_ratio)   # xb_mask: [bs x num_patch  x patch_len]
-        self.learner.mask = self.mask.bool()    # mask: [bs x num_patch ]
-        self.learner.xb = xb_mask       # learner.xb: masked 3D tensor    
-        self.learner.target = xb_patch      # learner.target: non-masked 3d tensor
+        self.learner.mask = self.mask.reshape(bs,cl,num_patch).bool()    # mask: [bs×cl x num_patch ]
+        self.learner.xb = xb_mask.reshape(bs,cl,num_patch,-1)       # learner.xb: masked 4D tensor    
+        self.learner.target = xb_patch.reshape(bs,cl,num_patch,-1)    # learner.target: non-masked 4D tensor
  
 
 
@@ -67,9 +71,6 @@ def create_patch(input_tensor, patch_size, stride):
 
     # 计算需要补齐的数量
     num_patches = (seq_len - patch_size) // stride + 1
-    padding = ((num_patches - 1) * stride + patch_size) - seq_len
-
-    batch_size, seq_len, _ = input_tensor.shape
     padding = (stride - seq_len % stride) % stride
     pad_num = (patch_size - (seq_len + padding) % patch_size) % patch_size
     padding += pad_num
