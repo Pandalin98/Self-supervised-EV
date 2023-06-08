@@ -7,7 +7,7 @@ from .core import Callback
 from torch.optim import lr_scheduler 
 from torch.optim.lr_scheduler import _LRScheduler
 import datetime
-
+import os
 
 class OneCycleLR(Callback):
     ##设置学习率变化策略，封存在callback中
@@ -129,6 +129,8 @@ class LRFinderCB(Callback):
             self.suggested_lr = valley(self.lrs, self.losses)
         # load back the model at the previous state
         self.load(self.temp_path)     
+        # remove temp file
+        os.remove(self.temp_path)
 
     def set_lr(self, lrs):
         if not isinstance(lrs, list): lrs = [lrs] * len(self.opt.param_groups)

@@ -3,3 +3,4 @@ saved_models/
 wandb/
 temp/
 plot/
+result_predict/

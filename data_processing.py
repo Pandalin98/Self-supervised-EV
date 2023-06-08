@@ -73,48 +73,65 @@ def data_processing(read_path,write_path):
 
     # 对每个车辆的数据进行处理
     for car_id, data in data_dict.items():
-        #设置循环标记
-        end_mask = (data['charge_status'].shift(2) == 1) & (data['charge_status'].shift(1) == 1) & (data['charge_status'] == 3)& (data['charge_status'].shift(-1) == 3)
-        begin_mask = (data['charge_status'].shift(2) == 3) & (data['charge_status'].shift(1) == 3) & (data['charge_status'] == 1)& (data['charge_status'].shift(-1) == 1)
-        data['cycle_flag'] = end_mask.cumsum()
-        data['begin_charge_flag'] = begin_mask
-        ## 绘制data内所有特征的曲线图
-        # from matplotlib import pyplot as plt
-        # data.plot(subplots=True, figsize=(16, 16))
-        # plt.savefig('data/{}_data.png'.format(car_id))
+            #设置循环标记
+            end_mask = (data['charge_status'].shift(2) == 1) & (data['charge_status'].shift(1) == 1) & (data['charge_status'] == 3)& (data['charge_status'].shift(-1) == 3)
+            begin_mask = (data['charge_status'].shift(2) == 3) & (data['charge_status'].shift(1) == 3) & (data['charge_status'] == 1)& (data['charge_status'].shift(-1) == 1)
+            data['cycle_flag'] = end_mask.cumsum()
+            data['begin_charge_flag'] = begin_mask
+            ## 绘制data内所有特征的曲线图
+            # from matplotlib import pyplot as plt
+            # data.plot(subplots=True, figsize=(16, 16))
+            # plt.savefig('data/{}_data.png'.format(car_id))
 
-        feature_data = pd.DataFrame(columns=feature_columns)
-        # 对每个充放电循环进行处理
-        groups = data.groupby(data['cycle_flag'])
-        for group, frame in groups:
-            frame = frame.sort_index()
-            charge_data = frame[frame['charge_status'] == 1]
-            begin_charge_row = frame[frame['begin_charge_flag']==1]
-            if charge_data.empty or begin_charge_row.empty:
-                continue
-            charge_data_filtered = charge_data[charge_data.diff().sum(axis=1) != 0]
-            charge_energy = 1/180 *charge_data_filtered['total_current'].abs().sum()
-            frame['charge_energy'] = charge_energy
-            #取begine_charge_row的第一个值，如果为空则跳过
-            if begin_charge_row.empty:
-                continue
-            soc_charge = begin_charge_row['soc'].values[0]            
-            soc_change_max =charge_data['soc'].diff().abs().max()
-            #确保soc_chargehe soc_change_max的值不为空且长度为1
-            if soc_charge>40 and soc_charge<90 and soc_change_max<3:
-                feature_data = feature_data.append(frame)
+            feature_data = pd.DataFrame(columns=feature_columns)
+            charge_list = []
+            mileage_list = []
+            # 对每个充放电循环进行处理
+            groups = data.groupby(data['cycle_flag'])
+            for group, frame in groups:
+                frame = frame.sort_index()
+                charge_data = frame[frame['charge_status'] == 1]
+                begin_charge_row = frame[frame['begin_charge_flag']==1]
+                if charge_data.empty or begin_charge_row.empty:
+                    continue
+                mileage = begin_charge_row['mileage'].values[0]
+                ##判断soc是否是连续上升的序列，前后相差1
+                soc_charge = charge_data['soc']          
+                soc_charge_max = charge_data['soc'].max()
+                soc_charge_min = charge_data['soc'].min()
+                ##判断charge_data_diff是不是只有1
 
-            
-            # print("车辆{}，循环{}中充电状态为:{}".format(car_id, group, charge_energy))
+                soc_change_max =charge_data['soc'].diff().abs().max()
+                #确保soc_chargehe soc_change_max的值不为空且长度为1
+                if soc_charge_max>=90 and soc_charge_min <= 40 and soc_change_max <= 1:
+                    #选择charge_data中soc在40和90之间的数据
+                    charge_data = charge_data[(charge_data['soc']>=40) & (charge_data['soc']<=90)]
+                    charge_data_filtered = charge_data[charge_data.diff().sum(axis=1) != 0]
+                    charge_energy = abs(1/180 *charge_data_filtered['total_current'].sum())
+                    frame['charge_energy'] = charge_energy
+                    feature_data = feature_data.append(frame)
+                else:
+                    continue
+                #绘制每个循环的曲线图
+                charge_list.append(charge_energy)
+                mileage_list.append(mileage)
+                # frame.plot(subplots=True, figsize=(16, 16))
+                # plt.savefig('data/{}_{}_data.png'.format(car_id, group))
 
-        # 将feature_data保存到 csv 文件中
-        #判断文件夹是否存在，不存在则创建
-        if not os.path.exists(write_path):
-            os.makedirs(write_path)
-        output_path = os.path.join(write_path, '{}_output.parquet'.format(car_id))
-        # date_fmt = 'yyyy-mm-dd hh:mm:ss'
-        print("正在保存文件：{}".format(output_path))
-        feature_data.to_parquet(output_path, index=True)
+                # print("车辆{}，循环{}中充电状态为:{}".format(car_id, group, charge_energy))
+            #绘制每个车辆的充电能量和里程数的散点图
+            plt.figure(figsize=(16, 16))
+            plt.scatter(mileage_list,charge_list)
+            print("车辆{}，充电能量为:{}".format(car_id, charge_list))
+            plt.savefig('data/{}_charge_mileage.png'.format(car_id))
+            # 将feature_data保存到 csv 文件中
+            #判断文件夹是否存在，不存在则创建
+            if not os.path.exists(write_path):
+                os.makedirs(write_path)
+            output_path = os.path.join(write_path, '{}_output.parquet'.format(car_id))
+            # date_fmt = 'yyyy-mm-dd hh:mm:ss'
+            print("正在保存文件：{}".format(output_path))
+            feature_data.to_parquet(output_path, index=True)
 
  
 

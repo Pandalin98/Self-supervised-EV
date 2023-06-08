@@ -57,7 +57,7 @@ parser.add_argument('--n_heads', type=int, default=16, help='number of Transform
 parser.add_argument('--d_model', type=int, default=768, help='Transformer d_model')
 parser.add_argument('--dropout', type=float, default=0.15, help='Transformer dropout')
 parser.add_argument('--head_dropout', type=float, default=0.3, help='head dropout')
-parser.add_argument('--input_len', type=int, default=12, help='activation function')
+parser.add_argument('--input_len', type=int, default=32, help='input time series length')
 parser.add_argument('--output_len', type=int, default=3, help='output dimension')
 #head args
 
@@ -90,7 +90,7 @@ args.save_pretrained_model = args.pretrained_model
 
 # args.save_finetuned_model = '_cw'+str(args.context_points)+'_tw'+str(args.output_len) + '_patch'+str(args.patch_len) + '_stride'+str(args.stride) + '_epochs-finetune' + str(args.n_epochs_finetune) + '_mask' + str(args.mask_ratio)  + '_model' + str(args.finetuned_model_id)
 suffix_name = '_tw'+str(args.output_len) + '_patch'+str(args.patch_len) + '_stride'+str(args.stride) + '_epochs-finetune' + str(args.n_epochs_finetune) + '_model' + str(args.finetuned_model_id)
-if args.is_finetune: args.save_finetuned_model = args.dset_finetune+'_patchtst_finetuned'+suffix_name
+args.save_finetuned_model = args.dset_finetune+'_patchtst_finetuned'+suffix_name
 if args.is_linear_probe: args.save_linear_probe_model = args.dset_finetune+'_patchtst_linear-probe'+suffix_name
 args.d_ff = 4 * args.d_model
 # get available GPU devide
@@ -310,7 +310,7 @@ if __name__ == '__main__':
         args.task_flag = 'linear_probe'
         head_type = 'prior_pooler'
         suggested_lr = find_lr(head_type=head_type)        
-        moedl =  linear_probe_func(suggested_lr)        
+        moedl_1 =  linear_probe_func(suggested_lr)        
         print('linear_probe completed')
         # # Test
         # out = test_func(model)        
@@ -342,6 +342,18 @@ if __name__ == '__main__':
                                     predict_input=predict_input)
         car_id = list(predict_input.car_id.unique())
         target_scaler = joblib.load('./data/target_scaler.pkl')
+        try :
+            model_path = args.save_path+args.save_finetuned_model+ '.pth'
+            model = get_model(19, 'prior_pooler', args)
+            model.load_state_dict(torch.load(model_path))
+            model.to(args.device)
+            model.eval()
+            print('成功加载finetuned模型')
+        except:
+            moedl = model_1
+        model.eval()
+
+
         predict_ah = []
         for i in range(len(data_set)):
             dict = data_set.__getitem__(i)
@@ -360,14 +372,13 @@ if __name__ == '__main__':
             decoder_input = torch.unsqueeze(decoder_input, axis=0).float().to(args.device)
 
             #深度学习模型进入eval模式
-            model.eval()
             sample = model(encoder_input,prior, decoder_input,encoder_mark)
             sample = sample.detach().cpu().numpy()
             sample = target_scaler.inverse_transform(sample.reshape(-1,1))
             predict_ah.append(sample)
         
         print('>>>>>>>>>>>>>>>>>>>>>>>>>>预测值为：>>>>>>>>>>>>>>>>>>>>>>>>>>')
-        #predict_ah 的元素内可能包含多个值，将这些值全部展平
+        #predict_ah 的元素内可能包含多个值，将这些值全部展平，并拼成一维数组
         for i in range(len(predict_ah)):
             print(predict_ah[i])
         # ##将预测值写入csv文件
