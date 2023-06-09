@@ -39,7 +39,7 @@ parser.add_argument('--dset_pretrain', type=str, default='Power-Battery', help='
 parser.add_argument('--dset_finetune', type=str, default='Power-Battery', help='finetune dataset name')
 parser.add_argument('--data_path', type=str, default='./data/local_data_structure', help='data path')
 parser.add_argument('--batch_size', type=int, default=128, help='batch size')
-parser.add_argument('--num_workers', type=int, default=8, help='number of workers for DataLoader')
+parser.add_argument('--num_workers', type=int, default=2, help='number of workers for DataLoader')
 parser.add_argument('--scale', type=str, default=None, help='scale the input data')
 parser.add_argument('--dist',type=bool,default=False,help='distrubuted training')
 # Patch
@@ -126,9 +126,8 @@ def get_model(c_in, head_type,args):
     return model
 
 
-def find_lr(head_type='pretrain'):
+def find_lr(dls,head_type='pretrain'):
     # get dataloader
-    dls = get_dls(args)    
     model = get_model(dls.vars, head_type,args)
     if args.task_flag != 'pretrain':
         # weight_path = args.save_path + args.pretrained_model + '.pth'
@@ -154,9 +153,7 @@ def find_lr(head_type='pretrain'):
     return suggested_lr  
 
 
-def pretrain_func(lr=args.lr):
-    # get dataloader
-    dls = get_dls(args)
+def pretrain_func(dls,lr=args.lr):
     # get model     
     model = get_model(dls.vars, 'pretrain',args)
     # get loss
@@ -191,10 +188,9 @@ def save_recorders(learn,save_path):
     df.to_csv(args.save_path + save_path + '_losses.csv', float_format='%.6f', index=False)
 
 
-def finetune_func(lr=args.lr,head_type='regression'):
+def finetune_func(dls,lr=args.lr,head_type='regression'):
     print('end-to-end finetuning')
-    # get dataloader
-    dls = get_dls(args)
+
     # get model 
     model = get_model(dls.vars, head_type, args)
     # transfer weight
@@ -283,11 +279,13 @@ if __name__ == '__main__':
         args.stride_ratio = 1
         args.task_flag = 'pretrain'
         # suggested_lr = 1e-4
-
-        suggested_lr = find_lr()
+        # get dataloader
+        dls = get_dls(args)    
+        suggested_lr = find_lr(dls)
         # Pretrain
-        pretrain_func(suggested_lr)
+        pretrain_func(dls,suggested_lr)
         print('pretraining completed')
+        del dls
     
     if args.is_finetune:
         # args.dset = args.dset_finetune
@@ -295,13 +293,16 @@ if __name__ == '__main__':
         args.stride_ratio = finetune_strie_ratio
         args.task_flag = 'finetune'
         head_type = 'prior_pooler'
-        suggested_lr = find_lr(head_type=head_type)        
+        # get dataloader
+        dls = get_dls(args)
+        suggested_lr = find_lr(dls,head_type=head_type)        
         # suggested_lr = 1e-4
-        model = finetune_func(suggested_lr,head_type=head_type)        
+        finetune_func(dls,suggested_lr,head_type=head_type)        
         print('finetune completed')
         # # Test
         # out = test_func(model=model)         
         # print('----------- Complete! -----------')
+        del dls
 
     if args.is_linear_probe:
         args.stride_ratio = finetune_strie_ratio
@@ -339,7 +340,8 @@ if __name__ == '__main__':
         data_set = PowerBatteryData(size=[args.input_len, args.output_len],data_path='./data/test_data_structure',
                                     scale = True,
                                     split='predict',
-                                    predict_input=predict_input)
+                                    predict_input=predict_input,
+                                    sort = True)
         car_id = list(predict_input.car_id.unique())
         target_scaler = joblib.load('./data/target_scaler.pkl')
         try :

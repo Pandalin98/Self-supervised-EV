@@ -47,6 +47,7 @@ class PowerBatteryData(Dataset):
                  val_cars=2,        # 3 days
                 predict_input=None,
                 visual_data=False,
+                sort = False,
                  ):
         super().__init__()
         if size is None:
@@ -61,7 +62,7 @@ class PowerBatteryData(Dataset):
         self.scaler = scale
         self.train_cars = train_cars
         self.val_cars = val_cars
-      
+        self.sort = sort
         self.__read_data__()
         if visual_data:
             self.visual_data()
@@ -88,12 +89,15 @@ class PowerBatteryData(Dataset):
         if self.split == 'predict':
             self.predict_decoder_input =predict_input
         self.__get_battery_pair__()
+        #删除df_raw，减少内存占用
+        del self.df_raw
 
 
     def __read_data__(self):
         self.df_raw = {}
         file_list = os.listdir(self.data_path)
-        # todo 真实运行时改回来遍历指定目录下的所有文件
+        if self.sort == True:
+            file_list.sort()
         for filename in file_list:
             # 判断是否为parquet文件
             if filename.endswith(".parquet"):
@@ -103,13 +107,14 @@ class PowerBatteryData(Dataset):
                 data = data[(data['charge_energy']>=50)]
                 ##根据index排序
                 data = data.sort_index()
-        ##todo 大规模数据前更改
                 vehicle_number = filename.split('_')[0]
                 #如果是CL1则改为CL01
                 if len(vehicle_number) == 3:
                     vehicle_number = 'CL0'+vehicle_number[2]
                 self.df_raw[vehicle_number] = data
                 print('读取{}成功'.format(vehicle_number))
+                ##todo 调试选项
+                # break
         # for key,data_frame in self.df_raw.items():
         #     data_frame.plot(x='mileage',y='charge_energy')
         #     plt.savefig('./data/visual_data/{}.png'.format(key))
@@ -172,6 +177,7 @@ class PowerBatteryData(Dataset):
         return encoder_array
 ##重构数据
     def __get_battery_pair__(self):
+        self.encoder_data_list = []
         self.data_list = []
         time_feature =[ 'month', 'weekday','day', 'hour']
         #读取dict中的每一个dataframe
@@ -186,6 +192,7 @@ class PowerBatteryData(Dataset):
             keys = keys_ori[self.train_cars:self.train_cars+self.val_cars]
         else:
             keys = keys_ori
+        index = 0
         for key in keys:
                 data_frame_all = self.df_raw[key]
                 data_frame_grobyed = data_frame_all.groupby(['cycle_flag'])
@@ -217,9 +224,9 @@ class PowerBatteryData(Dataset):
                         r_end = r_begin + self.output_len
                         encoder_data = data_frame_list[s_begin:s_end]
                         prior = [df['charge_energy'].values[-1] for df in encoder_data]
-                        encoder_data = [df[self.feature_columns] for df in encoder_data]
+                        encoder_data = [df[self.feature_columns].values for df in encoder_data]
                         prior = np.array(prior).reshape(-1,1)
-                        encoder_data = self.__pad_stack__(encoder_data)
+                        # encoder_data = self.__pad_stack__(encoder_data)
                         #读取data_frame_list中的每一个frame的['begin_charge_flag']==1
                         decoder_data_all = pd.concat(df[(df['begin_charge_flag'] == 1)] for df in data_frame_list[r_begin:])
                         #选出时间超过last_time 15天的数据
@@ -228,17 +235,22 @@ class PowerBatteryData(Dataset):
                         last_predcit = last_time + timedelta(days=30*6)
                         decoder_data_s = decoder_data_all[(decoder_data_all.index>=begin_predict)&(decoder_data_all.index<=last_predcit)]
                         #随机从decoder_data_s顺序采样n个数据，并返回采样的index
+
+                        data = {}
                         data['encoder_input']  = encoder_data
                         #把列表中的值转化为numpy数组
                         data['encoder_mark'] = np.array(time_list[s_begin:s_end])    
                         data['prior'] = prior
+                        ##todo 如果爆内存，尝试使用多重列表的方式解决重复采样问题
                         if len(decoder_data_s)<self.output_len:
                             break
+                        
                         if self.split == 'pretrain':
                             sample_times =1
                         else:
-                            sample_times = min(5,len(decoder_data_s)-self.output_len+1)
+                            sample_times = min(20,len(decoder_data_s)-self.output_len+1)
                         for j in range(sample_times):
+
                             sampled_indices = random.sample(range(len(decoder_data_s)), self.output_len)
                             sampled_indices.sort()
                             decoder_data = decoder_data_s.iloc[sampled_indices,:]
@@ -253,11 +265,12 @@ class PowerBatteryData(Dataset):
 
                         #选出 car_id = key的数据
                         decoder_input = decoder_input[decoder_input['car_id']==key][time_feature+['mileage']]
+
+
                         decoder_input['mileage'] = self.scaler['mileage_scaler'].transform(decoder_input['mileage'].values.reshape(-1,1))
                         encoder_data = data_frame_list[-self.input_len:]
                         prior = [df['charge_energy'].values[-1] for df in encoder_data]
                         prior = np.array(prior).reshape(-1,1)
-                        encoder_data = [df[self.feature_columns] for df in encoder_data]
                         encoder_data = self.__pad_stack__(encoder_data)
                         data['decoder_input'] = decoder_input.values
                         data['encoder_input'] = encoder_data
@@ -268,7 +281,10 @@ class PowerBatteryData(Dataset):
 
     def __getitem__(self, index):
         dict = {}
-        dict['encoder_input'] = torch.tensor(self.data_list[index]['encoder_input'],dtype=torch.float32)
+        encoder_data = self.data_list[index]['encoder_input']
+        encoder_list = [torch.from_numpy(arr) for arr in encoder_data] 
+        padded_encoder_tensor = pad_sequence(encoder_list, batch_first=True) #(cl,tl,fl)
+        dict['encoder_input'] = torch.tensor(padded_encoder_tensor,dtype=torch.float32)
         dict['prior'] = torch.tensor(self.data_list[index]['prior'],dtype=torch.float32)
         dict['decoder_input'] = torch.tensor(self.data_list[index]['decoder_input'],dtype=torch.float32)
         dict['encoder_mark'] = torch.tensor(self.data_list[index]['encoder_mark'],dtype=torch.float32)
@@ -285,13 +301,12 @@ class PowerBatteryData(Dataset):
 
 def Vari_len_collate_func(batch_dic):
     batch_len = len(batch_dic)  # 批尺寸
-    sorted_batch = sorted(batch_dic, key=lambda x: x['encoder_input'].shape[0], reverse=True)
     #batch_dic (cl,tl,fl)转化为 (tl,cl,fl)
-    x_batch = [dic['encoder_input'].transpose(0,1) for dic in sorted_batch]
-    label_batch = [dic['label'] for dic in sorted_batch if 'label' in dic.keys()]
-    prior_batch = [dic['prior'] for dic in sorted_batch]
-    x_dec_batch = [dic['decoder_input'] for dic in sorted_batch]
-    x_mark_batch = [dic['encoder_mark'] for dic in sorted_batch]
+    x_batch = [dic['encoder_input'].transpose(0,1) for dic in batch_dic] #(cl,tl,fl)
+    label_batch = [dic['label'] for dic in batch_dic if 'label' in dic.keys()] #
+    prior_batch = [dic['prior'] for dic in batch_dic]
+    x_dec_batch = [dic['decoder_input'] for dic in batch_dic]
+    x_mark_batch = [dic['encoder_mark'] for dic in batch_dic]
     res = {}
     res['encoder_input'] = pad_sequence(x_batch, batch_first=True, padding_value=0).transpose(1,2)
     res['decoder_input'] = pad_sequence(x_dec_batch, batch_first=True, padding_value=0)
@@ -305,14 +320,13 @@ def Vari_len_collate_func(batch_dic):
 if __name__ == '__main__':
 
 
-    data_set = PowerBatteryData(size=(32,3),split='train')
+    data_set = PowerBatteryData(size=(32,3),split='pretrain')
 
     data_loader = DataLoader(
         data_set,
         batch_size=64,
         shuffle=True,
-        num_workers=32,
-        drop_last=True,
+        drop_last=False,
         collate_fn=Vari_len_collate_func
     )
 
