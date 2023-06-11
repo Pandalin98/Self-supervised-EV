@@ -43,8 +43,8 @@ class PowerBatteryData(Dataset):
                  split='pretrain',
                  size=None,
                  scale=None,         
-                 train_cars=18,     # 15 days
-                 val_cars=2,        # 3 days
+                 train_cars=16,     
+                 val_cars=4,        
                 predict_input=None,
                 visual_data=False,
                 sort = False,
@@ -93,6 +93,7 @@ class PowerBatteryData(Dataset):
         del self.df_raw
 
 
+
     def __read_data__(self):
         self.df_raw = {}
         file_list = os.listdir(self.data_path)
@@ -113,7 +114,7 @@ class PowerBatteryData(Dataset):
                     vehicle_number = 'CL0'+vehicle_number[2]
                 self.df_raw[vehicle_number] = data
                 print('读取{}成功'.format(vehicle_number))
-                ##todo 调试选项
+                # ##todo 调试选项
                 # break
         # for key,data_frame in self.df_raw.items():
         #     data_frame.plot(x='mileage',y='charge_energy')
@@ -149,35 +150,8 @@ class PowerBatteryData(Dataset):
         joblib.dump(mileage_scaler, './data/mileage_scaler.pkl')
         return self.scaler
     
-    def __pad_stack__(self, encoder_data):
-        max_rows = max(df.shape[0] for df in encoder_data)  # 找到最大的行数
-
-        # 创建零值填充数组
-        padding_array = np.zeros_like(encoder_data[0].iloc[-1])
-
-        # 填充或截断每个 DataFrame，使其具有相同的行数
-        encoder_data_processed = []
-        for df in encoder_data:
-            if df.shape[0] < max_rows:
-                # 填充不足的行数
-                padding_rows = max_rows - df.shape[0]
-                padded_rows = np.tile(padding_array, (padding_rows, 1))
-                padded_df = pd.concat([df, pd.DataFrame(padded_rows, columns=df.columns)])
-                encoder_data_processed.append(padded_df)
-            elif df.shape[0] > max_rows:
-                # 截断多余的行数
-                truncated_df = df.iloc[:max_rows]
-                encoder_data_processed.append(truncated_df)
-            else:
-                # 行数已经相同，无需处理
-                encoder_data_processed.append(df)
-
-        # 对处理后的 encoder_data 进行堆叠操作
-        encoder_array = np.stack(encoder_data_processed)
-        return encoder_array
 ##重构数据
     def __get_battery_pair__(self):
-        self.encoder_data_list = []
         self.data_list = []
         time_feature =[ 'month', 'weekday','day', 'hour']
         #读取dict中的每一个dataframe
@@ -192,7 +166,9 @@ class PowerBatteryData(Dataset):
             keys = keys_ori[self.train_cars:self.train_cars+self.val_cars]
         else:
             keys = keys_ori
-        index = 0
+        self.frame_index ={}
+        encoder_index = 0
+        decoder_index = 0
         for key in keys:
                 data_frame_all = self.df_raw[key]
                 data_frame_grobyed = data_frame_all.groupby(['cycle_flag'])
@@ -225,6 +201,8 @@ class PowerBatteryData(Dataset):
                         encoder_data = data_frame_list[s_begin:s_end]
                         prior = [df['charge_energy'].values[-1] for df in encoder_data]
                         encoder_data = [df[self.feature_columns].values for df in encoder_data]
+                        encoder_list = [torch.from_numpy(arr) for arr in encoder_data] 
+                        padded_encoder_tensor = pad_sequence(encoder_list, batch_first=True) 
                         prior = np.array(prior).reshape(-1,1)
                         # encoder_data = self.__pad_stack__(encoder_data)
                         #读取data_frame_list中的每一个frame的['begin_charge_flag']==1
@@ -237,65 +215,92 @@ class PowerBatteryData(Dataset):
                         #随机从decoder_data_s顺序采样n个数据，并返回采样的index
 
                         data = {}
-                        data['encoder_input']  = encoder_data
+                        data['encoder_input']  = padded_encoder_tensor
                         #把列表中的值转化为numpy数组
                         data['encoder_mark'] = np.array(time_list[s_begin:s_end])    
                         data['prior'] = prior
+                        self.frame_index[encoder_index] = []
+                        data['decoder_sample'] = {}
                         ##todo 如果爆内存，尝试使用多重列表的方式解决重复采样问题
                         if len(decoder_data_s)<self.output_len:
                             break
-                        
                         if self.split == 'pretrain':
-                            sample_times =1
+                            sample_times = 1
                         else:
-                            sample_times = min(20,len(decoder_data_s)-self.output_len+1)
+                            sample_times = min(20, len(decoder_data_s) - self.output_len + 1)
+                        random_indices = np.random.choice(len(decoder_data_s), size=(sample_times, self.output_len), replace=True)
                         for j in range(sample_times):
-
-                            sampled_indices = random.sample(range(len(decoder_data_s)), self.output_len)
+                            sampled_indices = random_indices[j]
+                            decoder_data = decoder_data_s.iloc[sampled_indices, :]
+                            sampled_indices = sampled_indices.tolist()
                             sampled_indices.sort()
-                            decoder_data = decoder_data_s.iloc[sampled_indices,:]
-                            time_list_sampled = [time_list[idx] for idx in sampled_indices]  # 访问 time_list 中的元素
-                            data['decoder_input'] =np.concatenate([np.array(time_list_sampled) ,decoder_data[['mileage']].values],axis=1) 
-                            data['decoder_output'] = decoder_data['charge_energy'].values
-                            self.data_list.append(data)
+                            time_list_sampled = [time_list[idx] for idx in sampled_indices]
+                            back_input = np.concatenate([np.array(time_list[s_begin:s_end]), prior], axis=1)
+                            predcit_input = np.concatenate([np.array(time_list_sampled), decoder_data[['mileage']].values], axis=1)
+                            decoder_input = np.concatenate([back_input, predcit_input], axis=0)
+                            decoder_output = decoder_data['charge_energy'].values
+                            data['decoder_sample'][decoder_index] = {'decoder_input': decoder_input, 'decoder_output': decoder_output}
+                            self.frame_index[encoder_index].append(decoder_index)
+                            decoder_index += 1
+                        encoder_index += 1
+                        self.data_list.append(data)
 
                 if self.split == 'predict':
                         data = {}
                         decoder_input = self.predict_decoder_input
-
                         #选出 car_id = key的数据
                         decoder_input = decoder_input[decoder_input['car_id']==key][time_feature+['mileage']]
-
-
                         decoder_input['mileage'] = self.scaler['mileage_scaler'].transform(decoder_input['mileage'].values.reshape(-1,1))
                         encoder_data = data_frame_list[-self.input_len:]
+
                         prior = [df['charge_energy'].values[-1] for df in encoder_data]
+                        encoder_data = [df[self.feature_columns].values for df in encoder_data]
                         prior = np.array(prior).reshape(-1,1)
-                        encoder_data = self.__pad_stack__(encoder_data)
-                        data['decoder_input'] = decoder_input.values
-                        data['encoder_input'] = encoder_data
+                        encoder_list = [torch.from_numpy(arr) for arr in encoder_data] 
+                        padded_encoder_tensor = pad_sequence(encoder_list, batch_first=True) 
+                        back_input = np.concatenate([np.array(time_list[-self.input_len:])  ,prior],axis=1)
+                        data['decoder_input'] = np.concatenate([back_input,decoder_input.values],axis=0)
+                        data['encoder_input'] = padded_encoder_tensor
                         data['encoder_mark'] = np.array(time_list[-self.input_len:])
                         data['prior'] = prior
                         self.data_list.append(data)
+        self.frame_index = {element: key for key, value in self.frame_index.items() for element in value}
+        self.total_length = decoder_index
+        # exit()
+    # 初始化其他部分
+
+
+    def __len__(self):
+        if self.split == 'predict':
+            return len(self.data_list)
+        if self.split == 'pretrain':
+            return len(self.data_list)
+        else:
+            return self.total_length
 
 
     def __getitem__(self, index):
         dict = {}
-        encoder_data = self.data_list[index]['encoder_input']
-        encoder_list = [torch.from_numpy(arr) for arr in encoder_data] 
-        padded_encoder_tensor = pad_sequence(encoder_list, batch_first=True) #(cl,tl,fl)
-        dict['encoder_input'] = torch.tensor(padded_encoder_tensor,dtype=torch.float32)
-        dict['prior'] = torch.tensor(self.data_list[index]['prior'],dtype=torch.float32)
-        dict['decoder_input'] = torch.tensor(self.data_list[index]['decoder_input'],dtype=torch.float32)
-        dict['encoder_mark'] = torch.tensor(self.data_list[index]['encoder_mark'],dtype=torch.float32)
-        if self.split != 'predict':
-            dict['label'] = torch.tensor(self.data_list[index]['decoder_output'],dtype=torch.float32)
+        if self.split == 'predict':
+            encoder_data = self.data_list[index]['encoder_input']
+            dict['encoder_input'] = torch.tensor(encoder_data,dtype=torch.float32)
+            dict['prior'] = torch.tensor(self.data_list[index]['prior'],dtype=torch.float32)
+            dict['decoder_input'] = torch.tensor(self.data_list[index]['decoder_input'],dtype=torch.float32)
+            dict['encoder_mark'] = torch.tensor(self.data_list[index]['encoder_mark'],dtype=torch.float32)
+        else:
+            encoder_index = self.frame_index[index]
+            decoder_index = index
+            encoder_data = self.data_list[encoder_index]['encoder_input']
+            dict['encoder_input'] = torch.tensor(encoder_data,dtype=torch.float32)
+            dict['prior'] = torch.tensor(self.data_list[encoder_index]['prior'],dtype=torch.float32)
+            dict['encoder_mark'] = torch.tensor(self.data_list[encoder_index]['encoder_mark'],dtype=torch.float32)
+            dict['decoder_input'] = torch.tensor(self.data_list[encoder_index]['decoder_sample'][decoder_index]['decoder_input'],dtype=torch.float32)
+            dict['label'] = torch.tensor(self.data_list[encoder_index]['decoder_sample'][decoder_index]['decoder_output'],dtype=torch.float32)
+
         return dict
 
-    def __len__(self):
-        return len(self.data_list) 
 
-    def inverse_transform( data):
+    def inverse_transform(self,data):
         return self.scaler.inverse_transform(data)
 
 
@@ -320,52 +325,52 @@ def Vari_len_collate_func(batch_dic):
 if __name__ == '__main__':
 
 
-    data_set = PowerBatteryData(size=(32,3),split='pretrain')
-
-    data_loader = DataLoader(
-        data_set,
-        batch_size=64,
-        shuffle=True,
-        drop_last=False,
-        collate_fn=Vari_len_collate_func
-    )
-
-    for i, dict in enumerate(data_loader):
-        encoder_in,encoder_mark, decoder_in,decoder_out,prior = dict['encoder_input'],dict['encoder_mark'],dict['decoder_input'],dict['label'],dict['prior']
-        print('{}:encoder_in{}__encoder_mark{}__decoder_in{}__decoder_out{}__prior{}'.format(i, encoder_in.shape,encoder_mark.shape, decoder_in.shape,decoder_out.shape,prior.shape))
-    pass
-
-    # predict_input =pd.read_csv('./data/result.csv')
-    # # 重命名列名
-    # predict_input = predict_input.rename(columns={
-    #     '车辆号': 'car_id',
-    #     '拟充电时间': 'index',
-    #     '拟充电时刻里程': 'mileage',
-    #     '估计的充电量': 'charge_energy'
-    # })
-    # # 将 'index' 列设置为索引，并将其解析为 datetime
-    # predict_input['index'] = pd.to_datetime(predict_input['index'])
-    # predict_input = predict_input.set_index('index')
-    # #读出month和day作为新的两列
-    # predict_input_index = pd.to_datetime(predict_input.index)
-    # predict_input['month'] = predict_input_index.month
-    # predict_input['weekday'] = predict_input_index.weekday
-    # predict_input['hour'] = predict_input_index.hour    
-    # predict_input['day'] = predict_input_index.day
-    # data_set = PowerBatteryData(size=(24,3),        predict_input=predict_input,
-    #     split='predict',
-    #     data_path = './data/test_data_structure')
+    # data_set = PowerBatteryData(size=(32,3),split='pretrain')
 
     # data_loader = DataLoader(
     #     data_set,
     #     batch_size=64,
     #     shuffle=True,
-    #     num_workers=32,
     #     drop_last=False,
     #     collate_fn=Vari_len_collate_func
     # )
 
     # for i, dict in enumerate(data_loader):
-    #     encoder_in,encoder_mark, decoder_in,prior = dict['encoder_input'],dict['encoder_mark'],dict['decoder_input'],dict['prior']
-    #     print('{}:encoder_in{}__encoder_mark{}__decoder_in{}__prior{}'.format(i, encoder_in.shape,encoder_mark.shape, decoder_in.shape,prior.shape))
+    #     encoder_in,encoder_mark, decoder_in,decoder_out,prior = dict['encoder_input'],dict['encoder_mark'],dict['decoder_input'],dict['label'],dict['prior']
+    #     print('{}:encoder_in{}__encoder_mark{}__decoder_in{}__decoder_out{}__prior{}'.format(i, encoder_in.shape,encoder_mark.shape, decoder_in.shape,decoder_out.shape,prior.shape))
     # pass
+
+    predict_input =pd.read_csv('./data/result.csv')
+    # 重命名列名
+    predict_input = predict_input.rename(columns={
+        '车辆号': 'car_id',
+        '拟充电时间': 'index',
+        '拟充电时刻里程': 'mileage',
+        '估计的充电量': 'charge_energy'
+    })
+    # 将 'index' 列设置为索引，并将其解析为 datetime
+    predict_input['index'] = pd.to_datetime(predict_input['index'])
+    predict_input = predict_input.set_index('index')
+    #读出month和day作为新的两列
+    predict_input_index = pd.to_datetime(predict_input.index)
+    predict_input['month'] = predict_input_index.month
+    predict_input['weekday'] = predict_input_index.weekday
+    predict_input['hour'] = predict_input_index.hour    
+    predict_input['day'] = predict_input_index.day
+    data_set = PowerBatteryData(size=(24,3),        predict_input=predict_input,
+        split='predict',
+        data_path = './data/test_data_structure')
+
+    data_loader = DataLoader(
+        data_set,
+        batch_size=64,
+        shuffle=True,
+        num_workers=32,
+        drop_last=False,
+        collate_fn=Vari_len_collate_func
+    )
+
+    for i, dict in enumerate(data_loader):
+        encoder_in,encoder_mark, decoder_in,prior = dict['encoder_input'],dict['encoder_mark'],dict['decoder_input'],dict['prior']
+        print('{}:encoder_in{}__encoder_mark{}__decoder_in{}__prior{}'.format(i, encoder_in.shape,encoder_mark.shape, decoder_in.shape,prior.shape))
+    pass

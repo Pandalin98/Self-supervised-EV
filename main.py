@@ -29,8 +29,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--device',type=int,default=0,help='device id')
 # Pretraining and Finetuning
 parser.add_argument('--is_pretrain', type=int, default=1, help='do pretraining or not')
-parser.add_argument('--is_finetune', type=int, default=1, help='do finetuning or not')
-parser.add_argument('--is_linear_probe', type=int, default=0, help='if linear_probe: only finetune the last layer')
+parser.add_argument('--is_finetune', type=int, default=0, help='do finetuning or not')
+parser.add_argument('--is_linear_probe', type=int, default=1, help='if linear_probe: only finetune the last layer')
 parser.add_argument('--test',type=bool,default=False,help='fest model identification')
 parser.add_argument('--predcit',type=bool,default=True,help='predict')
 parser.add_argument('--project_name',type=str,default='power_battery',help='project name')
@@ -38,37 +38,35 @@ parser.add_argument('--project_name',type=str,default='power_battery',help='proj
 parser.add_argument('--dset_pretrain', type=str, default='Power-Battery', help='pretrain dataset name')
 parser.add_argument('--dset_finetune', type=str, default='Power-Battery', help='finetune dataset name')
 parser.add_argument('--data_path', type=str, default='./data/local_data_structure', help='data path')
-parser.add_argument('--batch_size', type=int, default=128, help='batch size')
-parser.add_argument('--num_workers', type=int, default=2, help='number of workers for DataLoader')
+parser.add_argument('--batch_size', type=int, default=64, help='batch size')
+parser.add_argument('--num_workers', type=int, default=8, help='number of workers for DataLoader')
 parser.add_argument('--scale', type=str, default=None, help='scale the input data')
 parser.add_argument('--dist',type=bool,default=False,help='distrubuted training')
 # Patch
-parser.add_argument('--patch_len', type=int, default=1000, help='patch length')
-parser.add_argument('--stride', type=int, default=None, help='stride between patch')
-parser.add_argument('--stride_ratio', type=float, default=1.25, help='stride between patch')
+parser.add_argument('--patch_len', type=int, default=500, help='patch length')
+parser.add_argument('--stride', type=int, default=True, help='stride between patch')
+parser.add_argument('--stride_ratio', type=float, default=1.5, help='stride between patch')
 # RevIN
 parser.add_argument('--revin', type=int, default=0, help='reversible instance normalization')
-
 # Model args
-parser.add_argument('--n_layers', type=int, default=4, help='number of Transformer layers')
-parser.add_argument('--n_layers_dec', type=int, default=1, help='Transformer d_ff')
+parser.add_argument('--n_layers', type=int, default=5, help='number of Transformer layers')
+parser.add_argument('--n_layers_dec', type=int, default=3, help='Transformer d_ff')
 parser.add_argument('--prior_dim', type=int, default=1, help='dim of prior information')
 parser.add_argument('--n_heads', type=int, default=16, help='number of Transformer heads')
-parser.add_argument('--d_model', type=int, default=768, help='Transformer d_model')
+parser.add_argument('--d_model', type=int, default=1024, help='Transformer d_model')
 parser.add_argument('--dropout', type=float, default=0.15, help='Transformer dropout')
-parser.add_argument('--head_dropout', type=float, default=0.3, help='head dropout')
-parser.add_argument('--input_len', type=int, default=32, help='input time series length')
+parser.add_argument('--head_dropout', type=float, default=0.2, help='head dropout')
+parser.add_argument('--input_len', type=int, default=16, help='input time series length')
 parser.add_argument('--output_len', type=int, default=3, help='output dimension')
 #head args
-
 # Pretrain task
 parser.add_argument('--mask_ratio', type=float, default=0.4, help='masking ratio for the input')
 parser.add_argument('--recon_weight', type=float, default=0.7, help='input dimension')
 parser.add_argument('--kl_temperature', type=float, default=0.01, help='input dimension')
 # Optimization args
-parser.add_argument('--n_epochs_pretrain', type=int, default=200, help='number of pre-training epochs')
+parser.add_argument('--n_epochs_pretrain', type=int, default=10, help='number of pre-training epochs')
 parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
-parser.add_argument('--n_epochs_finetune', type=int, default=50, help='number of finetuning epochs')
+parser.add_argument('--n_epochs_finetune', type=int, default=10, help='number of finetuning epochs')
 parser.add_argument('--head_epochs_ratio',type=float,default=0.2,help='ratio of head epochs')
 # model id to keep track of the number of models saved
 parser.add_argument('--pretrained_model_id', type=int, default=1, help='id of the saved pretrained model')
@@ -78,6 +76,7 @@ parser.add_argument('--finetuned_model_id', type=int, default=1, help='id of the
 #                     help='path of the pretrained model')
 
 
+
 args = parser.parse_args()
 args.stride = int(args.patch_len * args.stride_ratio)
 
@@ -85,14 +84,14 @@ print('args:', args)
 args.pretrained_model = 'patchtst_pretrained_dataset'+str(args.dset_pretrain)+'_patch'+str(args.patch_len) + '_stride'+str(args.stride) + '_epochs-pretrain' + str(args.n_epochs_pretrain) + '_mask' + str(args.mask_ratio)  + '_model' + str(args.pretrained_model_id)
 args.save_path = 'saved_models/' + args.dset_pretrain + '/masked_patchtst/' + args.model_type + '/'
 if not os.path.exists(args.save_path): os.makedirs(args.save_path)
-args.save_pretrained_model = args.pretrained_model
 
-
+time = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 # args.save_finetuned_model = '_cw'+str(args.context_points)+'_tw'+str(args.output_len) + '_patch'+str(args.patch_len) + '_stride'+str(args.stride) + '_epochs-finetune' + str(args.n_epochs_finetune) + '_mask' + str(args.mask_ratio)  + '_model' + str(args.finetuned_model_id)
-suffix_name = '_tw'+str(args.output_len) + '_patch'+str(args.patch_len) + '_stride'+str(args.stride) + '_epochs-finetune' + str(args.n_epochs_finetune) + '_model' + str(args.finetuned_model_id)
-args.save_finetuned_model = args.dset_finetune+'_patchtst_finetuned'+suffix_name
-if args.is_linear_probe: args.save_linear_probe_model = args.dset_finetune+'_patchtst_linear-probe'+suffix_name
+suffix_name = '_time'+str(time)+'_ol'+str(args.output_len) + '_patch'+str(args.patch_len) + '_stride'+str(args.stride) + '_epochs-finetune' + str(args.n_epochs_finetune) + '_model' + str(args.finetuned_model_id)+ '_n_layer'+str(args.n_layers)+'_n_dec'+str(args.n_layers_dec)+'_n_head'+str(args.n_heads)+'_d_model'+str(args.d_model)+'_dropout'+str(args.dropout)+'_head_dropout'+str(args.head_dropout)
 args.d_ff = 4 * args.d_model
+args.save_pretrained_model = args.pretrained_model
+args.save_linear_probe_model = 'linear_probe' + suffix_name
+args.save_finetuned_model = 'finetuned' + suffix_name
 # get available GPU devide
 if not args.dist:
     set_device(device_id=args.device)
@@ -120,6 +119,7 @@ def get_model(c_in, head_type,args):
                 act='relu',
                 res_attention=False,
                 prior_dim=args.prior_dim,
+                input_len=args.input_len,
                 )        
     # print out the model size
     print('number of model params', sum(p.numel() for p in model.parameters() if p.requires_grad))
@@ -150,6 +150,7 @@ def find_lr(dls,head_type='pretrain'):
     # fit the data to the model
     suggested_lr = learn.lr_finder(args.task_flag,loss_func = loss_func)
     print('suggested_lr', suggested_lr)
+    torch.cuda.empty_cache()
     return suggested_lr  
 
 
@@ -220,10 +221,9 @@ def finetune_func(dls,lr=args.lr,head_type='regression'):
     return learn.model
 
 
-def linear_probe_func(lr=args.lr,head_type='regression'):
+def linear_probe_func(dls,lr=args.lr,head_type='regression'):
     print('linear probing')
     # get dataloader
-    dls = get_dls(args)
     # get model 
     model = get_model(dls.vars, head_type, args)
     # transfer weight
@@ -270,6 +270,14 @@ def test_func(model,dls):
     
     return out
 
+def cal_gpu(module):
+    if isinstance(module, torch.nn.DataParallel):
+        module = module.module
+    for submodule in module.children():
+        if hasattr(submodule, "_parameters"):
+            parameters = submodule._parameters
+            if "weight" in parameters:
+                return parameters["weight"].device
 
 if __name__ == '__main__':
     ##保持预训练stride_ratio=1，finetune时再恢复
@@ -278,6 +286,7 @@ if __name__ == '__main__':
     if args.is_pretrain:
         args.stride_ratio = 1
         args.task_flag = 'pretrain'
+        args.batch_size = int(32*32/args.input_len)
         # suggested_lr = 1e-4
         # get dataloader
         dls = get_dls(args)    
@@ -297,7 +306,7 @@ if __name__ == '__main__':
         dls = get_dls(args)
         suggested_lr = find_lr(dls,head_type=head_type)        
         # suggested_lr = 1e-4
-        finetune_func(dls,suggested_lr,head_type=head_type)        
+        model=finetune_func(dls,suggested_lr,head_type=head_type)        
         print('finetune completed')
         # # Test
         # out = test_func(model=model)         
@@ -305,14 +314,19 @@ if __name__ == '__main__':
         del dls
 
     if args.is_linear_probe:
+        print('begin linear_probe')
         args.stride_ratio = finetune_strie_ratio
+        args.batch_size = 4*args.batch_size
         # args.dset = args.dset_finetune
         # Finetune
         args.task_flag = 'linear_probe'
         head_type = 'prior_pooler'
-        suggested_lr = find_lr(head_type=head_type)        
-        moedl_1 =  linear_probe_func(suggested_lr)        
+
+        dls = get_dls(args)
+        suggested_lr = find_lr(dls,head_type=head_type)        
+        model =  linear_probe_func(dls,suggested_lr,head_type=head_type)        
         print('linear_probe completed')
+        del dls
         # # Test
         # out = test_func(model)        
         # print('----------- Complete! -----------')
@@ -345,16 +359,22 @@ if __name__ == '__main__':
         car_id = list(predict_input.car_id.unique())
         target_scaler = joblib.load('./data/target_scaler.pkl')
         try :
-            model_path = args.save_path+args.save_finetuned_model+ '.pth'
+            moedl = model
+        except:
+            if args.is_finetune:
+                model_path = args.save_path+args.save_finetuned_model+ '.pth'
+            if args.is_linear_probe:
+                model_path = args.save_path+args.save_linear_probe_model+ '.pth'
+            # model_path = "saved_models/Power-Battery/masked_patchtst/based_model/linear_probe_time2023-06-10-14-30-32_ol24_patch1000_stride1250_epochs-finetune10_model1_n_layer4_n_dec1_n_head16_d_model768_dropout0.15_head_dropout1.pth"
             model = get_model(19, 'prior_pooler', args)
+            # model_path ="saved_models/Power-Battery/masked_patchtst/based_model/linear_probe_time2023-06-10-16-07-57_ol24_patch500_stride750_epochs-finetune400_model1_n_layer5_n_dec3_n_head16_d_model1024_dropout0.15_head_dropout0.2.pth"
             model.load_state_dict(torch.load(model_path))
             model.to(args.device)
             model.eval()
-            print('成功加载finetuned模型')
-        except:
-            moedl = model_1
+        print('成功加载finetuned模型')
+            
         model.eval()
-
+        device = cal_gpu(model)
 
         predict_ah = []
         for i in range(len(data_set)):
@@ -368,10 +388,10 @@ if __name__ == '__main__':
             decoder_input = torch.tensor(decoder_input)
             prior = torch.tensor(prior)
             encoder_input,_ = create_patch(encoder_input, args.patch_len, args.stride)
-            encoder_input = torch.unsqueeze(encoder_input, axis=0).float().to(args.device)
-            encoder_mark = torch.unsqueeze(encoder_mark, axis=0).float().to(args.device)
-            prior = torch.unsqueeze(prior, axis=0).float().to(args.device)
-            decoder_input = torch.unsqueeze(decoder_input, axis=0).float().to(args.device)
+            encoder_input = torch.unsqueeze(encoder_input, axis=0).float().to(device)
+            encoder_mark = torch.unsqueeze(encoder_mark, axis=0).float().to(device)
+            prior = torch.unsqueeze(prior, axis=0).float().to(device)
+            decoder_input = torch.unsqueeze(decoder_input, axis=0).float().to(device)
 
             #深度学习模型进入eval模式
             sample = model(encoder_input,prior, decoder_input,encoder_mark)

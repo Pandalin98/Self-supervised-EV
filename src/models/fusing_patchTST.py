@@ -43,10 +43,12 @@ class Fusing_PatchTST(nn.Module):
                  res_attention:bool=True, pre_norm:bool=False, store_attn:bool=False,
                  pe:str='zeros', learn_pe:bool=True, head_dropout = 0, 
                  head_type = "regression", individual = False, 
-                 y_range:Optional[tuple]=None, verbose:bool=False,prior_dim =1,output_attention = False, **kwargs):
+                 y_range:Optional[tuple]=None, verbose:bool=False,prior_dim =1,output_attention = False,input_len=32,**kwargs):
 
         super().__init__()
         self.y_range = y_range
+        self.output_len = target_dim
+        self.input_len = input_len
         assert head_type in ['pretrain', 'prior_pooler', 'regression', 'classification'], 'head type should be either pretrain, prediction, or regression'
         # Backbone
         self.backbone = PatchTSTEncoder(c_in, patch_len=patch_len, stride=stride,
@@ -129,6 +131,7 @@ class Fusing_PatchTST(nn.Module):
             output = self.decoder( dec_in.transpose(0,1),z_enc_out.transpose(0,1)).transpose(0,1)
             y = self.out_put_projection(output)         # y: bs x output_dim
             if self.y_range: y = SigmoidRange(*self.y_range)(y)        
+            y = y[:,self.input_len:,:]
             return y.squeeze(-1)
 
 class FFN(nn.Module):
