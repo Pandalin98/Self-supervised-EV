@@ -9,16 +9,12 @@ from torch import nn
 from torch import Tensor
 from torch.nn import TransformerDecoder, TransformerDecoderLayer
 import torch.nn.functional as F
-
-import numpy as np
-
 from collections import OrderedDict
 from src.models.layers.pos_encoding import *
 from src.models.layers.basics import *
 from src.models.layers.attention import *
 from src.models.layers.Embed import Patch_Emb,Decoder_Emb,TemporalEmbedding
 from src.models.layers.SelfAttention_Family import AttentionLayer, FullAttention
-
 # Cell
 ##Define the symbol 
 ## batch size : bs
@@ -29,110 +25,172 @@ from src.models.layers.SelfAttention_Family import AttentionLayer, FullAttention
 #length of the feature : fl
 
 class Fusing_PatchTST(nn.Module):
-    """
-    Output dimension: 
-         [bs x tl x fl] for prediction
-         [bs x fl] for regression
-         [bs x fl] for classification
-         [bs xcl x np x fl*pl] for pretrain
-    """
-        ##对head进行修改，修改输入输出的dim
-    def __init__(self, c_in:int , patch_len:int, stride:int,c_in_dec=1 ,  target_dim =1,
-                 n_layers:int=3, n_layers_dec=1,d_model=128, n_heads=16, n_heads_dec = 8,shared_embedding=True, d_ff:int=256, 
-                 norm:str='BatchNorm', attn_dropout:float=0., dropout:float=0., act:str="gelu", 
-                 res_attention:bool=True, pre_norm:bool=False, store_attn:bool=False,
-                 pe:str='zeros', learn_pe:bool=True, head_dropout = 0, 
-                 head_type = "regression", individual = False, 
-                 y_range:Optional[tuple]=None, verbose:bool=False,prior_dim =1,output_attention = False,input_len=32,**kwargs):
-
+    def __init__(
+        self,
+        c_in: int,
+        patch_len: int,
+        stride: int,
+        c_in_dec: int = 1,
+        target_dim: int = 1,
+        n_layers: int = 3,
+        n_layers_dec: int = 1,
+        d_model: int = 128,
+        n_heads: int = 16,
+        n_heads_dec: int = 8,
+        shared_embedding: bool = True,
+        d_ff: int = 256,
+        norm: str = 'BatchNorm',
+        attn_dropout: float = 0.0,
+        dropout: float = 0.0,
+        act: str = "gelu",
+        res_attention: bool = True,
+        pre_norm: bool = False,
+        store_attn: bool = False,
+        pe: str = 'zeros',
+        learn_pe: bool = True,
+        head_dropout: float = 0,
+        head_type: str = "regression",
+        individual: bool = False,
+        y_range: Optional[tuple] = None,
+        verbose: bool = False,
+        prior_dim: int = 1,
+        output_attention: bool = False,
+        input_len: int = 32,
+        **kwargs
+    ):
         super().__init__()
         self.y_range = y_range
         self.output_len = target_dim
         self.input_len = input_len
         assert head_type in ['pretrain', 'prior_pooler', 'regression', 'classification'], 'head type should be either pretrain, prediction, or regression'
+        
         # Backbone
-        self.backbone = PatchTSTEncoder(c_in, patch_len=patch_len, stride=stride,
-                                n_layers=n_layers, d_model=d_model, n_heads=n_heads, 
-                                shared_embedding=shared_embedding, d_ff=d_ff,
-                                attn_dropout=attn_dropout, dropout=dropout, act=act, 
-                                res_attention=res_attention, pre_norm=pre_norm, store_attn=store_attn,
-                                pe=pe, learn_pe=learn_pe, verbose=verbose, **kwargs)
-        # todo 后期需要创一个带日期的embedding
-    
-        self.dec_emb = Decoder_Emb(c_in_dec,d_model)
+        self.backbone = PatchTSTEncoder(
+            c_in,
+            patch_len=patch_len,
+            stride=stride,
+            n_layers=n_layers,
+            d_model=d_model,
+            n_heads=n_heads,
+            shared_embedding=shared_embedding,
+            d_ff=d_ff,
+            attn_dropout=attn_dropout,
+            dropout=dropout,
+            act=act,
+            res_attention=res_attention,
+            pre_norm=pre_norm,
+            store_attn=store_attn,
+            pe=pe,
+            learn_pe=learn_pe,
+            verbose=verbose,
+            **kwargs
+        )
+        
+        self.dec_emb = Decoder_Emb(c_in_dec, d_model)
         self.decoder = TransformerDecoder(
             TransformerDecoderLayer(
                 d_model=d_model,
                 nhead=n_heads_dec,
                 dim_feedforward=d_ff,
                 dropout=dropout,
-            )
-            ,num_layers=n_layers_dec,
-            norm=nn.Sequential(Transpose(1,2), nn.BatchNorm1d(d_model), Transpose(1,2)) if norm=='BatchNorm'
-            else nn.LayerNorm(d_model))
+            ),
+            num_layers=n_layers_dec,
+            norm=nn.Sequential(Transpose(1, 2), nn.BatchNorm1d(d_model), Transpose(1, 2))
+            if norm == 'BatchNorm'
+            else nn.LayerNorm(d_model)
+        )
+        
+        self.decoder_AR = TransformerDecoder(
+            TransformerDecoderLayer(
+                d_model=d_model,
+                nhead=n_heads_dec,
+                dim_feedforward=d_ff,
+                dropout=dropout,
+            ),
+            num_layers=n_layers_dec,
+            norm=nn.Sequential(Transpose(1, 2), nn.BatchNorm1d(d_model), Transpose(1, 2))
+            if norm == 'BatchNorm'
+            else nn.LayerNorm(d_model)
+        )
+        
         self.output_attention = output_attention
         self.TemporalEmbedding = TemporalEmbedding(d_model=d_model)
+        
         # Head
         self.n_vars = c_in
         self.head_type = head_type
         self.d_model = d_model
         self.prior_dim = prior_dim
-        ##todo 后期修改prior dim的输入
-        self.prior_projection  = nn.Linear(self.prior_dim, d_model)
+        self.prior_projection = nn.Linear(self.prior_dim, d_model)
+        
         if head_type == "pretrain":
-            self.head_re = PretrainHead_regression(d_model, patch_len, self.n_vars,head_dropout) # custom head passed as a partial func with all its kwargs
-            self.head_cons1 = AttentionAggregation(d_model)
-            self.head_cons1_1 = PretrainHead_constrat(d_model)
-            self.head_cons2 = PretrainHead_constrat(d_model)
+            self.head_re = PretrainHead_regression(d_model, patch_len, self.n_vars, head_dropout)
+            self.head_cons_z = PretrainHead_constrat(d_model)
+            self.head_cons_prior = PretrainHead_constrat(d_model)
         elif head_type == "prior_pooler":
-            self.head = Prior_Attention_Pooler(d_model, d_ff, d_model, head_dropout,output_attention_flag = output_attention)
+            self.head = Prior_Attention_Pooler(d_model, d_ff, d_model, head_dropout, output_attention_flag=output_attention)
         elif head_type == "regression":
             self.head = RegressionHead(5, d_model, target_dim, head_dropout, y_range)
         elif head_type == "classification":
             self.head = ClassificationHead(self.n_vars, d_model, target_dim, head_dropout)
-        self.out_put_projection = nn.Linear(d_model, 1)
-
-    def forward(self, enc_in,prior,dec_in,enc_mark):                             
-        """
-        input:
-        enc_in: tensor [bs x cl x np x fl * pl]
-        enc_mark tensor [bs x cl x 4]
-
-        prior: tensor [bs x cl x prior_dim]
-        output:
-        # z: [bs x target_dim x nvars] for prediction
-        #    [bs x target_dim] for regression
-        #    [bs x target_dim] for classification
-        #    [bs * cl x np x  fl * pl]  and [bs*cl x np x d_model ]for pretrain
-        """   
-        bs,cl,np,fpl = enc_in.shape
-        enc_in = enc_in.view(bs*cl,np,fpl)
-        if self.head_type == "pretrain":    
+        
+        self.output_mile = nn.Linear(d_model, 1)
+        self.output_dec = nn.Linear(d_model, 1)
+        self.output_AR = nn.Linear(d_model, 1)
+        
+    def forward(self, enc_in, prior, dec_in, enc_mark,dec_mark):
+        bs, cl, np, fpl = enc_in.shape
+        enc_in = enc_in.view(bs * cl, np, fpl)
+        ##dec_in 增加一个维度，在最后
+        _,output_len,_= dec_in.shape
+        #encoder part
+        if self.head_type == "pretrain":
             prior = self.prior_projection(prior)
-            z_enc = self.backbone(enc_in)                                                                # z: [bs x nvars x d_model x num_patch]
-            con1 = self.head_cons1_1(self.head_cons1(z_enc))
-            con2 = self.head_cons2(prior.view(bs*cl,self.d_model))
-            ##con2 复制cl次
-
-            re = self.head_re(z_enc).view(bs,cl,np,-1)     
-            return re,con1,con2 
+            z_enc = self.backbone(enc_in)
+            con1 = self.head_cons_z(z_enc)
+            con2 = self.head_cons_prior(prior.view(bs * cl, self.d_model))
+            re = self.head_re(z_enc).view(bs, cl, np, -1)
+            return re, con1, con2
         else:
-            z_enc = self.backbone(enc_in) #[bs*cl, np, d_model]
+            z_enc = self.backbone(enc_in)
             if self.head_type == "prior_pooler":
-                prior = prior.view(bs*cl,self.prior_dim)
+                prior = prior.view(bs * cl, self.prior_dim)
                 prior = self.prior_projection(prior)
-                z_enc_out = self.head(z_enc,prior)
+                z_enc_out = self.head(z_enc, prior)
             else:
                 z_enc_out = self.head(z_enc)
+                        
+        #decoder part
+            z_enc_out = z_enc_out.view(bs, cl, self.d_model)
+            #local 特征，日期特征和全局特征进行融合
+            z_enc_out = z_enc_out + self.TemporalEmbedding(enc_mark)
             
-            z_enc_out=z_enc_out.view(bs,cl,self.d_model)  
-            z_enc_out = z_enc_out+self.TemporalEmbedding(enc_mark)
-            dec_in = self.TemporalEmbedding(dec_in[:,:,:4])+self.dec_emb(dec_in[:,:,4:])
-            output = self.decoder( dec_in.transpose(0,1),z_enc_out.transpose(0,1)).transpose(0,1)
-            y = self.out_put_projection(output)         # y: bs x output_dim
-            if self.y_range: y = SigmoidRange(*self.y_range)(y)        
-            y = y[:,self.input_len:,:]
+            #基于里程的trend
+            trend = self.dec_emb(dec_in)
+            energe_trend = self.output_mile(trend)[:,self.input_len:,:]
+
+            
+            #基于季节自回归的预测 
+            season = prior.view(bs,cl,-1)-trend[:,:self.input_len,:]
+            AR_input = torch.cat([season, torch.zeros(bs,output_len,self.d_model).to(season.device)], dim=1)
+            AR_out = self.decoder_AR(AR_input.transpose(0, 1),AR_input.transpose(0, 1)).transpose(0, 1)[:,self.input_len:,:]
+            AR_out = self.output_AR(AR_out)[:,self.input_len:,:]
+            
+        
+            #基于时间和过往变量的浮动预测
+            dec_mark = self.TemporalEmbedding(dec_mark)
+            dec_out = self.decoder(dec_mark.transpose(0, 1), z_enc_out.transpose(0, 1)).transpose(0, 1)
+            dec_out =self.output_dec(dec_out)
+            
+
+            
+            y = energe_trend + dec_out + AR_out
+            
+            if self.y_range:
+                y = SigmoidRange(*self.y_range)(y)
+            
             return y.squeeze(-1)
+
 
 class FFN(nn.Module):
     """基于位置的前馈网络"""
@@ -503,10 +561,11 @@ class TSTEncoderLayer(nn.Module):
 
 if __name__ == '__main__':
     
-    x = torch.zeros(3,4, 3, 400) #bs x cl x np x fl*pl
-    prior = torch.zeros(3,4,1) 
-    x_dec = torch.ones(3,6,5)
-    x_mark = torch.ones(3,4,4)
+    x = torch.zeros(3,32, 3, 400) #bs x cl x np x fl*pl
+    prior = torch.zeros(3,32,1) 
+    x_dec = torch.ones(3,44,1)
+    x_mark = torch.ones(3,32,4)
+    dec_mark = torch.ones(3,12,4)
     model = Fusing_PatchTST(c_in=4,c_in_dec =1,
                 target_dim=1,
                 patch_len=100,
@@ -520,6 +579,7 @@ if __name__ == '__main__':
                 head_dropout=0.1,
                 act='relu',
                 head_type='prior_pooler',
-                res_attention=False
+                res_attention=False,
+                input_len = 32
                 )        
-    print(model.forward(x,prior,x_dec,x_mark).shape)
+    print(model.forward(x,prior,x_dec,x_mark,dec_mark).shape)

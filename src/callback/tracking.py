@@ -159,11 +159,18 @@ class TrackTrainingCB(Callback):
             values['kl_loss'] = sum(self.batch_recorder['kl_losses']).item()/n
         # calculate metrics if available after each epoch
         if len(self.preds) == 0: return values
-        self.preds = torch.cat(self.preds)
-        self.targs = torch.cat(self.targs)        
-        for func in self.metrics:             
-            # values[func.__name__] = func(self.targs, self.preds)
-            values[func.__name__] = func(self.targs, self.preds)        
+        try :
+            self.preds = torch.cat(self.preds)
+            self.targs = torch.cat(self.targs)        
+            for func in self.metrics:             
+                # values[func.__name__] = func(self.targs, self.preds)
+                values[func.__name__] = func(self.targs, self.preds)        
+        except:
+            for func in self.metrics:
+                values[func.__name__] = 0
+                for i in range(len(self.preds)):
+                    values[func.__name__] += func(self.targs[i], self.preds[i])
+                values[func.__name__] /= len(self.preds)
         return values
     
 
@@ -178,7 +185,8 @@ class PrintResultsCB(Callback):
         super().__init__()
         self.args = args       
         self.load_threshold =None
-        self.initialize_wandb()
+        if args.initialize_wandb == True and (not wandb.run):
+            self.initialize_wandb()
 
     def get_header(self, recorder):        
         "recorder is a dictionary"
@@ -187,20 +195,6 @@ class PrintResultsCB(Callback):
 
     def initialize_wandb(self):
         #读取当下时间，并转化为str
-        if self.load_threshold is not None:
-            while True:
-            # 获取当前CPU负载
-                load = psutil.cpu_percent()
-                if load > self.load_threshold:
-                    print(f"CPU load is {load}%, holding...")
-                    # 等待1秒后再次读取CPU负载
-                    time.sleep(1)
-
-                else:
-                    print(f"CPU load is {load}%, continuing...")
-                    # 执行需要执行的代码
-                    # ...
-                    break
         now = datetime.datetime.now()
         now = now.strftime('%Y-%m-%d-%H-%M-%S')
         wandb.login()

@@ -38,7 +38,7 @@ class OneCycleLR(Callback):
                 
 
     def before_fit(self):
-        if not self.steps_per_epoch: self.steps_per_epoch = len(self.dls.train)
+        if not self.steps_per_epoch: self.steps_per_epoch = max(len(self.dls.train),1)
         self.lrs = []  # store lr values
         
         self.scheduler = lr_scheduler.OneCycleLR(optimizer = self.opt, 
