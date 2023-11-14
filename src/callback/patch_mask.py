@@ -61,6 +61,35 @@ class PatchMaskCB(Callback):
         self.learner.target = xb_patch.reshape(bs,cl,num_patch,-1)    # learner.target: non-masked 4D tensor
  
 
+def reverse_patch(patch, patch_size, stride, original_shape):
+    """
+    patch: [bs x num_patch x patch_len*n_vars]
+    return tensor: [bs x seq_len x n_vars]
+    """
+    batch_size, num_patch, _ = patch.shape
+    seq_len, n_vars = original_shape[1], original_shape[2]
+
+    # 初始化一个0的张量来填充结果
+    result_tensor = torch.zeros((batch_size, seq_len, n_vars), device=patch.device)
+
+    # 初始化一个张量来计算每个位置的累加次数（用于平均）
+    count = torch.zeros((batch_size, seq_len, n_vars), device=patch.device)
+
+    for i in range(num_patch):
+        start_idx = i * stride
+        end_idx = start_idx + patch_size
+        if end_idx > seq_len:
+            add_len = end_idx - seq_len
+            result_tensor[:, start_idx:end_idx, :] += patch[:, i].view(batch_size, patch_size, n_vars)[:,add_len,:]
+        else:
+            result_tensor[:, start_idx:end_idx, :] += patch[:, i].view(batch_size, patch_size, n_vars)
+        count[:, start_idx:end_idx, :] += 1
+
+    # 将累加的结果进行平均
+    result_tensor /= count
+
+    return result_tensor
+
 
 def create_patch(input_tensor, patch_size, stride):
     """

@@ -1,6 +1,7 @@
 
 from typing import List
 import torch
+import torch.cuda
 from torch.optim import Adam
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel
@@ -14,8 +15,7 @@ from pathlib import Path
 import numpy as np
 from sklearn.base import BaseEstimator
 import torch.nn.functional as F
-
-
+import time
 class Learner(GetAttr):
     """
     A high-level PyTorch module for training and fine-tuning deep learning models.
@@ -258,13 +258,12 @@ class Learner(GetAttr):
         """
         find the learning rate
         """
-        n_epochs = num_iter//max(len(self.dls.train),1) + 1
+        n_epochs = max(num_iter//max(len(self.dls.train),1) + 5,10)
         # indicator of lr_finder method is applied
         self.run_finder = True
         # add LRFinderCB to callback list and will remove later
         cb = LRFinderCB(start_lr, end_lr, num_iter, step_mode, suggestion=suggestion)                
         # fit
-
         if task_flag == 'pretrain':
             self.fit_pretrain(n_epochs=n_epochs, cbs=cb, do_valid=False)        
         if task_flag == 'finetune':
@@ -402,7 +401,18 @@ class Learner(GetAttr):
         self.add_callback(cb)
         self('before_test')
         self.model.eval()
-        with torch.no_grad(): self.all_batches('test')
+        torch.cuda.synchronize()
+        start_time = time.time()
+        memory_before = torch.cuda.memory_allocated() / 1024 / 1024  # 显存使用量（MB）
+
+        with torch.no_grad():
+            self.all_batches('test')
+
+        torch.cuda.synchronize()
+        end_time = time.time()
+        memory_after = torch.cuda.memory_allocated() / 1024 / 1024  # 显存使用量（MB）
+        memory_allocated = memory_after - memory_before  # 计算显存增加量（MB）
+        elapsed_time = end_time - start_time  # 计算时间（秒）
         self('after_test')   
         self.preds, self.targets = to_numpy([cb.preds, cb.targets])
         # calculate scores

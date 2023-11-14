@@ -53,7 +53,8 @@ def get_device(use_cuda=True, device_id=None, usage=5):
 def set_device(device_id):    
     "set the device that has usage < default usage  "
     device_ids = get_available_cuda(usage=5)
-    torch.cuda.set_device(device_ids[device_id])   # get the first available device
+    ##TODO 单卡设置
+    torch.cuda.set_device(device_id)   # get the first available device
 
 
 def default_device(use_cuda=True):

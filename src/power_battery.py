@@ -43,7 +43,7 @@ class PowerBatteryData(Dataset):
     def __init__(self, data_path='./data/local_data_structure',
                  split='pretrain',
                  size=None,
-                 scale=None,         
+                 scale=True,         
                  train_cars=16,     
                  val_cars=4,        
                 predict_input=None,
@@ -213,9 +213,9 @@ class PowerBatteryData(Dataset):
                         data['encoder_mark']=self.get_time_feature(encoder_data)
                         prior = [df['charge_energy'].values[-1] for df in encoder_data]
                         input_mileage = np.array([df[(df['begin_charge_flag'] == 1)]['mileage'] for df in encoder_data]).reshape(-1,1)
-                        encoder_data = [df[self.feature_columns].values for df in encoder_data]
-                        encoder_list = [torch.from_numpy(arr) for arr in encoder_data] 
-                        padded_encoder_tensor = pad_sequence(encoder_list, batch_first=True) 
+                        #限制输入长度
+                        encoder_data = [torch.from_numpy(df[self.feature_columns].values[:3000,:]) for df in encoder_data]
+                        padded_encoder_tensor = pad_sequence(encoder_data, batch_first=True) 
                         prior = np.array(prior).reshape(-1,1)
                         data['prior']=prior
                         data['encoder_input']=padded_encoder_tensor
@@ -317,7 +317,7 @@ def Vari_len_collate_func(batch_dic):
 if __name__ == '__main__':
 
 
-    data_set = PowerBatteryData(size=(32,3),split='val',visual_data=False)
+    data_set = PowerBatteryData(size=(32,3),split='val',visual_data=False,scale=True)
 
     data_loader = DataLoader(
         data_set,
