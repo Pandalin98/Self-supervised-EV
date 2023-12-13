@@ -122,6 +122,9 @@ class Learner(GetAttr):
    
 
     def contrast_loss(self, z1, z2):
+        #如果z1和z2的维度不一致，需要进行维度的转换
+        if z1.dim() == 1:
+            z1 = z1.unsqueeze(0)
         B = z1.size(0)
         z1 = F.normalize(z1, p=2, dim=1)
         z2 = F.normalize(z2, p=2, dim=1)

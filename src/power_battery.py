@@ -49,6 +49,7 @@ class PowerBatteryData(Dataset):
                 predict_input=None,
                 visual_data=False,
                 sort = False,
+                down_task = 'point_predict'
                  ):
         super().__init__()
         if size is None:
@@ -74,19 +75,18 @@ class PowerBatteryData(Dataset):
        'drive_motor_speed', 'drive_motor_torque', 'drive_motor_temperature',
        'motor_controller_input_voltage', 'motor_controller_dc_bus_current',
        'rechargeable_energy_storage_device_current']+['cycle_flag']
-
+        self.down_task = down_task
         if self.scaler is None:
-            self.scaler = self.standard_scaler()    
+            self.scaler = self.get_standard_scaler()    
         else:
             self.scaler ={}
             self.scaler['feature_scaler'] = joblib.load('./data/feature_scaler.pkl')
             self.scaler['target_scaler'] = joblib.load('./data/target_scaler.pkl')
             self.scaler['mileage_scaler'] = joblib.load('./data/mileage_scaler.pkl')
-        for key in self.df_raw.keys():
-            self.df_raw[key][self.feature_columns] = self.scaler['feature_scaler'].transform(self.df_raw[key][self.feature_columns])
-            self.df_raw[key]['charge_energy'] = self.scaler['target_scaler'].transform(self.df_raw[key]['charge_energy'].values.reshape(-1,1))
-            self.charge_up_bound =   self.scaler['target_scaler'].transform([[60]])[0][0]                      
-            self.charge_low_bound = self.scaler['target_scaler'].transform([[50]])[0][0]
+        
+        #已经设置好了，不需要更改
+        self.scaler['prior_scaler'] = joblib.load('./data/prior_scaler.pkl')
+
         if self.split == 'predict':
             self.predict_decoder_input =predict_input
         self.__get_battery_pair__()
@@ -106,7 +106,7 @@ class PowerBatteryData(Dataset):
                 # 读取parquet文件并存储到字典中，键为文件名（不包含.parquet后缀），值为对应的DataFrame
                 data = pd.read_parquet(os.path.join(self.data_path, filename))
                 #筛选出charge_energy在50-60之间的数据
-                data = data[(data['charge_energy']>=50)]
+                # data = data[(data['charge_energy']>=50)]
                 ##根据index排序
                 data = data.sort_index()
                 vehicle_number = filename.split('_')[0]
@@ -115,8 +115,8 @@ class PowerBatteryData(Dataset):
                     vehicle_number = 'CL0'+vehicle_number[2]
                 self.df_raw[vehicle_number] = data
                 print('读取{}成功'.format(vehicle_number))
-                #todo 调试选项
-                # break
+                #TODO 调试选项
+                break
         # for key,data_frame in self.df_raw.items():
         #     data_frame.plot(x='mileage',y='charge_energy')
         #     plt.savefig('./data/visual_data/{}.png'.format(key))
@@ -136,7 +136,7 @@ class PowerBatteryData(Dataset):
         with open(file_path,'wb') as f:
             pickle.dump(visual_data,f)
     
-    def standard_scaler(self):
+    def get_standard_scaler(self):
         ##把字典中所有self.df_raw放在一个dataframe中
         df = pd.concat(self.df_raw.values(), ignore_index=True)
         feature_scaler = MinMaxScaler()
@@ -156,6 +156,7 @@ class PowerBatteryData(Dataset):
         joblib.dump(feature_scaler, './data/feature_scaler.pkl')
         joblib.dump(target_scaler, './data/target_scaler.pkl')
         joblib.dump(mileage_scaler, './data/mileage_scaler.pkl')
+        print('保存scaler成功')
         return self.scaler
     
     def get_time_feature(self,data_frame_list):
@@ -172,10 +173,79 @@ class PowerBatteryData(Dataset):
         time_array = time_array.reshape(time_array.shape[0],time_array.shape[1])
         return time_array
     
+    def get_prior(self,df_list):
+        
+        ##参照论文A state of health estimation framework 
+        # based on real-world electric vehicles operating data中的五个prior；
+        # 同时增加第六个prior：真实充电容量
+        def get_cell_voltage_diff(df_list,ui):
+            ##1.内部特征:最大电压差
+            df_list = [df[(df['charge_status']==1)] for df in df_list]
+            ##将total_voltage一项全部取整数
+            df_list = [df.assign(total_voltage=df['total_voltage'].astype(int)) for df in df_list]
+            df_list = [df[df['total_voltage'] == ui ] for df in df_list]
+            hf1 = [(abs(df['max_single_cell_voltage']-df['min_single_cell_voltage'])).min() for df in df_list]
+            return hf1
+        
+        def get_charge_time(df_list,up):
+            ##2.内部特征:恒压充电时间
+            df_list = [df[(df['charge_status']==1)] for df in df_list]
+            ##将total_voltage一项全部取整数
+            df_list = [df.assign(total_voltage=df['total_voltage'].astype(int)) for df in df_list]
+            df_list = [df[df['total_voltage'] == up ] for df in df_list]
+            hf2 = [len(df) for df in df_list]
+            return hf2
+        
+        def get_temp_percentage(df_list,Th,Tl):
+            #找出极端充电温度的比例
+            df_list = [df[(df['charge_status']==1)] for df in df_list]
+            df_list = [(df['min_temperature']+df['max_temperature'])/2 for df in df_list]
+            #找出温度在Th和Tl之间的数据
+            hf4 = [1 - len(df[(df >= Tl) & (df <= Th)]) / len(df_list[i]) for i, df in enumerate(df_list)]
+            return hf4
+        
+        def soc_propotion(df_list,SOCv):
+            ## 5.内部特征:低SOC充电比例
+            df_list = [df[(df['charge_status']==1)]['soc'] for df in df_list]
+            hf5 = [len(df[df<=SOCv])/len(df) for df in df_list]
+            return hf5
+    
+        hf1 = get_cell_voltage_diff(df_list,ui=366)
+        
+        hf2 = get_charge_time(df_list,up=365)
+        
+        ##3.外部特征:行驶里程数
+        hf3 = [(df['mileage'].max()) for df in df_list]
+        
+        ##4.外部特征:平均温度
+        hf4 = get_temp_percentage(df_list,Th=35,Tl=10)
+        
+        ##5.外部特征:低soc充电比例
+        hf5 = soc_propotion(df_list,SOCv=19)
+            
+        ##6.充电容量
+        hf6 = [df['charge_energy'][0] for df in df_list]
+        
+        #将hf1-hf6横向拼接
+        HF = np.column_stack((hf1,hf2,hf3,hf4,hf5,hf6))
+        #归一化到0-1空间
+        HF = self.scaler['prior_scaler'].transform(HF)
+        
+        ##将NAN替换为对应列的均值
+        HF = np.nan_to_num(HF, nan=np.nanmean(HF, axis=0))
+        
+        return HF
+    
+    def get_standarded(self,df):
+            df[self.feature_columns] = self.scaler['feature_scaler'].transform(df[self.feature_columns])
+            df['charge_energy'] = self.scaler['target_scaler'].transform(df['charge_energy'].values.reshape(-1,1))
+            df['fixed_capacity'] = self.scaler['target_scaler'].transform(df['fixed_capacity'].values.reshape(-1,1))
+
+            return df
+    
     ##重构数据
     def __get_battery_pair__(self):
         self.data_list = []
-        time_feature =[ 'month', 'weekday','day', 'hour']
         #读取dict中的每一个dataframe
         ##按照key的顺序读取
         keys_ori = list(self.df_raw.keys())
@@ -198,27 +268,25 @@ class PowerBatteryData(Dataset):
                 group_keys.sort()  # 对列表进行排序
                 data_frame_list = [data_frame_grobyed.get_group(x) for x in group_keys]
                 print('车辆{}的有效充电循环数为{}'.format(key,len(data_frame_list)))
-                ##对于 data_frame_list 中的每一个 frame，进行日期的提取
-
+                ##对于 data_frame_list 中的每一个 frame，进行日期的提取 
+                prior_list = self.get_prior(data_frame_list)
+                data_frame_list = [self.get_standarded(df) for df in data_frame_list]
                 if self.split != 'predict'  :
                     total_len = len(data_frame_list)
                     if total_len-self.input_len-self.output_len+1 <=0:
                         continue
                     for i in range(total_len-self.input_len-self.output_len+1):
-                        data = {}
                         s_begin = i
                         s_end = s_begin + self.input_len
                         r_begin = s_end
                         encoder_data = data_frame_list[s_begin:s_end]
-                        data['encoder_mark']=self.get_time_feature(encoder_data)
-                        prior = [df['charge_energy'].values[-1] for df in encoder_data]
+                        data = {}
+                        data['encoder_mark']=torch.tensor(self.get_time_feature(encoder_data),dtype=torch.float32)
+
                         input_mileage = np.array([df[(df['begin_charge_flag'] == 1)]['mileage'] for df in encoder_data]).reshape(-1,1)
                         #限制输入长度
                         encoder_data = [torch.from_numpy(df[self.feature_columns].values[:3000,:]) for df in encoder_data]
                         padded_encoder_tensor = pad_sequence(encoder_data, batch_first=True) 
-                        prior = np.array(prior).reshape(-1,1)
-                        data['prior']=prior
-                        data['encoder_input']=padded_encoder_tensor
                         # encoder_data = self.__pad_stack__(encoder_data)
                         #读取data_frame_list中的每一个frame的['begin_charge_flag']==1
                         decoder_data_all = pd.concat(df[(df['begin_charge_flag'] == 1)] for df in data_frame_list[r_begin:])
@@ -230,43 +298,53 @@ class PowerBatteryData(Dataset):
                         decoder_data = decoder_data_all.truncate(before = begin_predict,after = last_predcit)
                         decoder_input =  decoder_data['mileage'].values.reshape(-1,1)
                         mileage = np.concatenate((input_mileage,decoder_input),axis=0)
-                        decoder_output = decoder_data['charge_energy'].values
                         time_table = np.array([decoder_data.index.month,
                             decoder_data.index.weekday,
                             decoder_data.index.day,
                             decoder_data.index.hour]).T
-                        data['decoder_input'] = mileage
-                        data['decoder_mark'] =time_table
-                        data['decoder_output'] = decoder_output
+                        
+                        #构建dict  
+                        data['prior']=torch.tensor(prior_list[s_begin:s_end],dtype=torch.float32)
+                        data['encoder_input']=torch.tensor(padded_encoder_tensor,dtype=torch.float32)
+                        data['decoder_input'] = torch.tensor(mileage,dtype=torch.float32)
+                        data['decoder_mark'] =torch.tensor(time_table,dtype=torch.float32)
+                        data['fixed_capacity'] =torch.tensor( decoder_data['fixed_capacity'].values,dtype=torch.float32)
+                        data['charge_energy'] =torch.tensor( decoder_data['charge_energy'].values,dtype=torch.float32)
+                        
                         self.data_list.append(data)
 
-                if self.split == 'predict':
-                        data = {}
-                        decoder_input = self.predict_decoder_input
-                        #选出 car_id = key的数据
-                        decoder_input['mileage'] = self.scaler['mileage_scaler'].transform(decoder_input['mileage'].values.reshape(-1,1))
-                        decoder_mark = decoder_input[decoder_input['car_id']==key][time_feature]
-                        decoder_milage = decoder_input[decoder_input['car_id']==key]['mileage'].values.reshape(-1,1)
-                        encoder_data = data_frame_list[-self.input_len:]
-                        data['encoder_mark']=self.get_time_feature(encoder_data)
-                        input_mileage = [df[(df['begin_charge_flag'] == 1)]['mileage'].values for df in encoder_data]
-                        data['input_mileage']=input_mileage
-                        prior = [df['charge_energy'].values[-1] for df in encoder_data]
-                        encoder_data = [df[self.feature_columns].values for df in encoder_data]
-                        prior = np.array(prior).reshape(-1,1)
-                        encoder_list = [torch.from_numpy(arr) for arr in encoder_data] 
-                        padded_encoder_tensor = pad_sequence(encoder_list, batch_first=True)
-                        mileage = np.concatenate((input_mileage,decoder_milage),axis=0)
-                        data['decoder_input'] = mileage
-                        data['decoder_mark']= decoder_mark.values
-                        data['encoder_input'] = padded_encoder_tensor
-                        data['prior'] = prior
-                        self.data_list.append(data)
+                # if self.split == 'predict':
+                #         data = {}
+                #         decoder_input = self.predict_decoder_input
+                #         #选出 car_id = key的数据
+                #         decoder_input['mileage'] = self.scaler['mileage_scaler'].transform(decoder_input['mileage'].values.reshape(-1,1))
+                #         decoder_mark = decoder_input[decoder_input['car_id']==key][time_feature]
+                #         decoder_milage = decoder_input[decoder_input['car_id']==key]['mileage'].values.reshape(-1,1)
+                #         encoder_data = data_frame_list[-self.input_len:]
+                #         data['encoder_mark']=self.get_time_feature(encoder_data)
+                #         input_mileage = [df[(df['begin_charge_flag'] == 1)]['mileage'].values for df in encoder_data]
+                #         data['input_mileage']=input_mileage
+                #         prior = [df['charge_energy'].values[-1] for df in encoder_data]
+                #         encoder_data = [df[self.feature_columns].values for df in encoder_data]
+                #         prior = np.array(prior).reshape(-1,1)
+                #         encoder_list = [torch.from_numpy(arr) for arr in encoder_data] 
+                #         padded_encoder_tensor = pad_sequence(encoder_list, batch_first=True)
+                #         mileage = np.concatenate((input_mileage,decoder_milage),axis=0)
+                #         data['decoder_input'] = mileage
+                #         data['decoder_mark']= decoder_mark.values
+                #         data['encoder_input'] = padded_encoder_tensor
+                #         data['prior'] = prior
+                #         self.data_list.append(data)
         self.frame_index = {element: key for key, value in self.frame_index.items() for element in value}
         self.total_length = decoder_index
         # exit()
-        
-        
+        # 保存sclaer的文件
+        # all_prior_concatenated = np.concatenate(all_prior, axis=0)
+        # scaler = MinMaxScaler()
+        # scaler.fit(all_prior_concatenated)
+        # #保存scaler到./data下
+        # joblib.dump(scaler, './data/prior_scaler.pkl')
+        # exit()
     # 初始化其他部分
 
 
@@ -281,13 +359,16 @@ class PowerBatteryData(Dataset):
 
     def __getitem__(self, index):
         dict = {}
-        dict['encoder_input'] = torch.tensor(self.data_list[index]['encoder_input'],dtype=torch.float32)
-        dict['prior'] = torch.tensor(self.data_list[index]['prior'],dtype=torch.float32)
-        dict['decoder_input'] = torch.tensor(self.data_list[index]['decoder_input'],dtype=torch.float32)
-        dict['encoder_mark'] = torch.tensor(self.data_list[index]['encoder_mark'],dtype=torch.float32)
-        dict['decoder_mark'] = torch.tensor(self.data_list[index]['decoder_mark'],dtype=torch.float32)
-        if 'decoder_output' in self.data_list[index].keys():
-            dict['label'] = torch.tensor(self.data_list[index]['decoder_output'],dtype=torch.float32)
+        dict['encoder_input'] = self.data_list[index]['encoder_input']
+        dict['prior'] = self.data_list[index]['prior']
+        dict['decoder_input'] = self.data_list[index]['decoder_input']
+        dict['encoder_mark'] = self.data_list[index]['encoder_mark']
+        dict['decoder_mark'] = self.data_list[index]['decoder_mark']
+        if self.down_task == 'point_predict':
+            dict['label'] = self.data_list[index]['fixed_capacity']
+        if self.down_task == 'interval_predict':
+            dict['label'] = self.data_list[index]['charge_energy'] 
+        
         return dict
 
 
@@ -317,7 +398,7 @@ def Vari_len_collate_func(batch_dic):
 if __name__ == '__main__':
 
 
-    data_set = PowerBatteryData(size=(32,3),split='val',visual_data=False,scale=True)
+    data_set = PowerBatteryData(size=(32,3),split='pretrain',visual_data=False,scale=None)
 
     data_loader = DataLoader(
         data_set,

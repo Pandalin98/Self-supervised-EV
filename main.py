@@ -6,7 +6,7 @@ import os
 import torch
 from torch import nn
 from torch.cuda import memory_allocated
-from src.models.fusing_patchTST import Fusing_PatchTST
+from src.models.NervFormer import NervFormer
 from src.learner import Learner, transfer_weights
 from src.callback.tracking import *
 from src.callback.patch_mask import *
@@ -30,7 +30,7 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument('--device',type=int,default=0,help='device id')
 # Pretraining and Finetuning
-parser.add_argument('--is_pretrain', type=int, default=0, help='do pretraining or not')
+parser.add_argument('--is_pretrain', type=int, default=1, help='do pretraining or not')
 parser.add_argument('--is_finetune', type=int, default=0, help='do finetuning or not')
 parser.add_argument('--is_linear_probe', type=int, default=0, help='if linear_probe: only finetune the last layer')
 parser.add_argument('--explain', type=int, default=1, help='explain the model')
@@ -41,7 +41,7 @@ parser.add_argument('--project_name',type=str,default='power_battery',help='proj
 parser.add_argument('--dset_pretrain', type=str, default='Power-Battery', help='pretrain dataset name')
 parser.add_argument('--dset_finetune', type=str, default='Power-Battery', help='finetune dataset name')
 parser.add_argument('--data_path', type=str, default='./data/local_data_structure', help='data path')
-parser.add_argument('--batch_size', type=int, default=8, help='batch size')
+parser.add_argument('--batch_size', type=int, default=2, help='batch size')
 parser.add_argument('--num_workers', type=int, default=8, help='number of workers for DataLoader')
 parser.add_argument('--scale', type=str, default=True, help='scale the input data')
 parser.add_argument('--dist',type=bool,default=False,help='distrubuted training')
@@ -50,7 +50,7 @@ parser.add_argument('--revin', type=int, default=0, help='reversible instance no
 # Model args
 parser.add_argument('--n_layers', type=int, default=4, help='number of Transformer layers')
 parser.add_argument('--n_layers_dec', type=int, default=5, help='Transformer d_ff')
-parser.add_argument('--prior_dim', type=int, default=1, help='dim of prior information')
+parser.add_argument('--prior_dim', type=int, default=6, help='dim of prior information')
 parser.add_argument('--n_heads', type=int, default=16, help='number of Transformer heads')
 parser.add_argument('--d_model', type=int, default=1024, help='Transformer d_model')
 parser.add_argument('--dropout', type=float, default=0.15, help='Transformer dropout')
@@ -106,7 +106,7 @@ def get_model(c_in, head_type,args):
     # get number of patches
     
     # get modelxb, yb
-    model = Fusing_PatchTST(c_in=c_in,head_type=head_type,
+    model = NervFormer(c_in=c_in,head_type=head_type,
                 target_dim=args.output_len,
                 patch_len=args.patch_len,
                 stride=args.stride,

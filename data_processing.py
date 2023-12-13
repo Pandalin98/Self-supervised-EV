@@ -5,6 +5,9 @@ import os
 import warnings
 warnings.filterwarnings('ignore')
 import matplotlib.pyplot as plt
+from pygam import LinearGAM, s
+from sklearn.linear_model import LinearRegression
+
 
 def data_processing(read_path,write_path):
 # 读取目标文件夹下所有文件名
@@ -41,7 +44,10 @@ def data_processing(read_path,write_path):
        'drive_motor_speed', 'drive_motor_torque', 'drive_motor_temperature',
        'motor_controller_input_voltage', 'motor_controller_dc_bus_current',
        'rechargeable_energy_storage_device_current']
-        
+     
+
+    # 调试代码设置
+    # file_list = file_list[:1]
     # 循环遍历所有文件
     for file_name in file_list:
         # 读取数据集
@@ -73,64 +79,94 @@ def data_processing(read_path,write_path):
 
     # 对每个车辆的数据进行处理
     for car_id, data in data_dict.items():
-            #设置循环标记
-            end_mask = (data['charge_status'].shift(2) == 1) & (data['charge_status'].shift(1) == 1) & (data['charge_status'] == 3)& (data['charge_status'].shift(-1) == 3)
-            begin_mask = (data['charge_status'].shift(2) == 3) & (data['charge_status'].shift(1) == 3) & (data['charge_status'] == 1)& (data['charge_status'].shift(-1) == 1)
-            data['cycle_flag'] = end_mask.cumsum()
-            data['begin_charge_flag'] = begin_mask
-            ## 绘制data内所有特征的曲线图
-            # from matplotlib import pyplot as plt
-            # data.plot(subplots=True, figsize=(16, 16))
-            # plt.savefig('data/{}_data.png'.format(car_id))
+        #设置循环标记
+        end_mask = (data['charge_status'].shift(2) == 1) & (data['charge_status'].shift(1) == 1) & (data['charge_status'] == 3)& (data['charge_status'].shift(-1) == 3)
+        begin_mask = (data['charge_status'].shift(2) == 3) & (data['charge_status'].shift(1) == 3) & (data['charge_status'] == 1)& (data['charge_status'].shift(-1) == 1)
+        data['cycle_flag'] = end_mask.cumsum()
+        data['begin_charge_flag'] = begin_mask
+        feature_data = pd.DataFrame(columns=feature_columns)
+        charge_list = []
+        mileage_list = []
+        # 对每个充放电循环进行处理
+        groups = data.groupby(data['cycle_flag'])
+        for group, frame in groups:
+            frame = frame.sort_index()
+            charge_data = frame[frame['charge_status'] == 1]
+            begin_charge_row = frame[frame['begin_charge_flag']==1]
+            if charge_data.empty or begin_charge_row.empty:
+                continue
+            mileage = begin_charge_row['mileage'].values[0]
+            ##判断soc是否是连续上升的序列，前后相差1
+            soc_charge_max = min(charge_data['soc'].max(),95)
+            soc_charge_min = max(charge_data['soc'].min(),25)
+            soc_change_total = soc_charge_max-soc_charge_min
+            ##判断charge_data_diff是不是只有1
 
-            feature_data = pd.DataFrame(columns=feature_columns)
-            charge_list = []
-            mileage_list = []
-            # 对每个充放电循环进行处理
-            groups = data.groupby(data['cycle_flag'])
-            for group, frame in groups:
-                frame = frame.sort_index()
-                charge_data = frame[frame['charge_status'] == 1]
-                begin_charge_row = frame[frame['begin_charge_flag']==1]
-                if charge_data.empty or begin_charge_row.empty:
-                    continue
-                mileage = begin_charge_row['mileage'].values[0]
-                ##判断soc是否是连续上升的序列，前后相差1
-                soc_charge = charge_data['soc']          
-                soc_charge_max = charge_data['soc'].max()
-                soc_charge_min = charge_data['soc'].min()
-                ##判断charge_data_diff是不是只有1
-
-                soc_change_max =charge_data['soc'].diff().abs().max()
-                #确保soc_chargehe soc_change_max的值不为空且长度为1
-                if soc_charge_max>=90 and soc_charge_min <= 40 and soc_change_max <= 1:
-                    #选择charge_data中soc在40和90之间的数据
-                    charge_data = charge_data[(charge_data['soc']>=40) & (charge_data['soc']<=90)]
-                    charge_data_filtered = charge_data[charge_data.diff().sum(axis=1) != 0]
-                    charge_energy = abs(1/180 *charge_data_filtered['total_current'].sum())
-                    frame['charge_energy'] = charge_energy
-                    feature_data = feature_data.append(frame)
-                else:
-                    continue
-                #绘制每个循环的曲线图
+            soc_change_max =charge_data['soc'].diff().abs().max()
+            #确保soc_chargehe soc_change_max的值不为空且长度为1
+            if soc_change_total>=40 and soc_change_max <= 1 and mileage>=100000:
+                charge_data = charge_data[(charge_data['soc']>=25) & (charge_data['soc']<= 95)]
+                # charge_data_filtered = charge_data[charge_data.diff().sum(axis=1) != 0]
+                charge_energy = abs(1/180 *charge_data['total_current'].sum())/soc_change_total*100
+                frame['charge_energy'] = charge_energy
+                feature_data = feature_data.append(frame)
                 charge_list.append(charge_energy)
                 mileage_list.append(mileage)
-                # frame.plot(subplots=True, figsize=(16, 16))
-                # plt.savefig('data/{}_{}_data.png'.format(car_id, group))
+            else:
+                continue
+            #绘制每个循环的曲线图
+        #如果没有充电循环，则跳过
+        if len(charge_list) == 0:
+            continue
+        else:
+            charge = np.array(charge_list)
+            mileage = np.array(mileage_list)
+            mileage_len = mileage[-1]-mileage[0]
+            n_split = max(int(mileage_len/10000),4)
+            energy_data = pd.DataFrame({'charge_energy':charge, 'mileage':mileage})
 
-                # print("车辆{}，循环{}中充电状态为:{}".format(car_id, group, charge_energy))
-            #绘制每个车辆的充电能量和里程数的散点图
-            plt.figure(figsize=(16, 16))
-            plt.scatter(mileage_list,charge_list)
-            print("车辆{}，充电能量为:{}".format(car_id, charge_list))
-            plt.savefig('data/{}_charge_mileage.png'.format(car_id))
-            # 将feature_data保存到 csv 文件中
-            #判断文件夹是否存在，不存在则创建
+            ##过滤数据
+            # 计算线性回归线
+            model = LinearRegression()
+            model.fit(energy_data[['mileage']], energy_data['charge_energy'])
+            energy_data['predicted_charge_energy'] = model.predict(energy_data[['mileage']])
+
+            # 计算每个数据点与线性回归线的距离
+            energy_data['residual'] = abs(energy_data['charge_energy'] - energy_data['predicted_charge_energy'])
+
+            # 定义离群值的阈值
+            threshold = energy_data['residual'].quantile(0.95)
+
+            # 去除离群值
+            energy_data = energy_data[energy_data['residual'] <= threshold]
+            
+            
+            # 创建并拟合模型s
+            gam = LinearGAM(s(0,n_splines=n_split)).fit(energy_data[['mileage']], energy_data['charge_energy'])
+
+            # 创建平滑后的预测值s
+            smoothed_capacity = gam.predict(mileage)
+
+            # for i,frame in enumerate(feature_data):
+            #     frame['smoothed_charge_energy'] = smoothed_capacity[i]
+            
+            # 绘制原始数据和平滑后的数据
+            # plt.figure()
+            # plt.scatter(mileage, charge, color='gray', alpha=0.5)
+            # plt.plot(mileage, smoothed_capacity, color='red')
+            # plt.show()
+            for i in range(len(charge_list)):
+                feature_data.loc[feature_data['charge_energy'] == charge_list[i], 'fixed_capacity'] = smoothed_capacity[i]
+
+            #在feature_data中增加一列，对应的charge_energy和smoothed_capacity
             if not os.path.exists(write_path):
                 os.makedirs(write_path)
             output_path = os.path.join(write_path, '{}_output.parquet'.format(car_id))
             # date_fmt = 'yyyy-mm-dd hh:mm:ss'
             print("正在保存文件：{}".format(output_path))
+            ## 判断fixed_capacity是否在feature_data中
+            if 'fixed_capacity' in feature_data.columns:
+                print("fixed_capacity在feature_data中")
             feature_data.to_parquet(output_path, index=True)
 
  

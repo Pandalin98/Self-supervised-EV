@@ -7,3 +7,4 @@ result_predict/
 ##忽略png格式的文件
 *.png
 *.pyc
+*.html
