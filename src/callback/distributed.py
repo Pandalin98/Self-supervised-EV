@@ -1,173 +1,93 @@
+import deepspeed
 from .core import Callback
 import torch
-from torch.utils.data import DistributedSampler, DataLoader, SequentialSampler
-from torch.nn.parallel import DistributedDataParallel
 from typing import Optional, Dict, Any
 import logging
-
 logger = logging.getLogger(__name__)
+# from power_battery import Vari_len_collate_func
+
 
 
 class DistributedTrainer(Callback):
     "Wrap `model` in `DistributedDataParallel` and `dls` in `DistributedDL`"
     def __init__(self,
-                 local_rank,
-                 world_size,
                  sync_bn=True,  # Whether to replace all batch norm with `nn.SyncBatchNorm`
                  **kwargs
                  ):
-        self.local_rank = local_rank
-        self.world_size = world_size
-        self.sync_bn = sync_bn
         self.kwargs = kwargs
+        self.args = {
+            "num_gpus": 4,
+            "train_micro_batch_size_per_gpu": 1,
+            "gradient_accumulation_steps": 1,
+            "activation_checkpointing": {
+                "partition_activations": True,
+                "cpu_checkpointing": True,
+                "contiguous_memory_optimization": False,
+                "number_checkpoints": None,
+                "synchronize_checkpoint_boundary": False,
+                "profile": True
+            },
+            "fp16": {
+                "enabled": True,
+                "auto_cast": False,
+                "loss_scale": 0,
+                "initial_scale_power": 16,
+                "loss_scale_window": 1000,
+                "hysteresis": 2,
+                "consecutive_hysteresis": False,
+                "min_loss_scale": 1
+            },
+            "optimizer": {
+                "type": "AdamW",
+                "params": {
+                    "lr": 0.001,  # 使用学习率
+                    "betas": [0.9, 0.999],
+                    "eps": 1e-8,
+                    "weight_decay": 0.01
+                }
+            },
+            "zero_optimization": {
+                "stage": 3,
+                "offload_param": {
+                    "device": "cpu",
+                    "pin_memory": True
+                },
+                "offload_optimizer": {
+                    "device": "cpu",
+                    "pin_memory": True
+                },
+                "contiguous_gradients": True,
+                "overlap_comm": True
+            }
+        }
         super().__init__()
 
     def before_fit(self):
-        self.learner.model = self.prepare_model(
-            torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.model) if self.sync_bn else self.model,
-            ddp_kwargs=self.kwargs
+
+        # self.old_train_dl = self.dls.train
+        # self.old_valid_dl = self.dls.valid
+        lr = self.learner.opt.param_groups[0]['lr']
+        self.args['optimizer']['params']['lr'] = lr
+        #更改config='deepspeed_config.json'中的参数lr后传入
+        
+        self.learner.model, self.learner.opt,_, _ = deepspeed.initialize(args=None,
+            model=self.model,
+            # optimizer=self.opt,
+            model_parameters=self.model.parameters(),
+            config  =self.args
+            # training_data=self.dls.train.dataset,
+            # collate_fn=Vari_len_collate_func,
         )
-        self.old_train_dl = self.dls.train
-        self.old_valid_dl = self.dls.valid
+        
+        # self.learner.dls.train = train_dls
+        # self.learner.dls.valid = self._wrap_dl(self.dls.valid)
+        
 
-        self.learner.dls.train = self._wrap_dl(self.dls.train)
-        self.learner.dls.valid = self._wrap_dl(self.dls.valid)
-
-    def _wrap_dl(self, dl):
-        return dl if isinstance(dl, DistributedDL) else self.prepare_data_loader(dl)
 
 
     def after_fit(self): 
         self.learner.model = self.learner.model.module 
-        self.learner.dls.train = self.old_train_dl
-        self.learner.dls.valid = self.old_valid_dl
-
-    def prepare_model(self,
-                      model: torch.nn.Module,
-                      move_to_device: bool = True,
-                      wrap_ddp: bool = True,
-                      ddp_kwargs: Optional[Dict[str, Any]] = None) -> torch.nn.Module:
-        """Prepares the model for distributed execution.
-        Args:
-            model (torch.nn.Module): A torch model to prepare.
-            move_to_device (bool): Whether to move the model to the correct
-                device. If set to False, the model needs to manually be moved
-                to the correct device.
-            wrap_ddp (bool): Whether to wrap models in
-                ``DistributedDataParallel``.
-            ddp_kwargs (Dict[str, Any]): Args to pass into
-                ``DistributedDataParallel`` initialization if ``wrap_ddp`` is
-                set to True.
-        """
-        ddp_kwargs = ddp_kwargs or {}
-
-        rank = self.local_rank
-        device = torch.device(f"cuda:{rank}")
-
-        # device = get_device()
-
-        if torch.cuda.is_available():
-            torch.cuda.set_device(device)
-
-        if move_to_device:
-            logger.info(f"Moving model to device: {device}")
-            model = model.to(device)
-        if wrap_ddp and self.world_size > 1:
-            logger.info("Wrapping provided model in DDP.")
-            if torch.cuda.is_available():
-                model = DistributedDataParallel(
-                    model, device_ids=[rank], output_device=rank, **ddp_kwargs)
-            else:
-                model = DistributedDataParallel(model, **ddp_kwargs)
-
-        return model
-
-    def prepare_data_loader(self,
-                            data_loader: torch.utils.data.DataLoader,
-                            add_dist_sampler: bool = True,
-                            move_to_device: bool = True) -> torch.utils.data.DataLoader:
-        """
-        Prepares DataLoader for distributed execution.
-
-        This allows you to use the same exact code regardless of number of
-        workers or the device type being used (CPU, GPU).
-
-        Args:
-            data_loader (torch.utils.data.DataLoader): The DataLoader to
-                prepare.
-            add_dist_sampler (bool): Whether to add a DistributedSampler to
-                the provided DataLoader.
-            move_to_device (bool): If set, automatically move the data
-                returned by the data loader to the correct device.
-        """
-
-        # Only add Distributed Sampler if the following conditions hold:
-        # 1. More than one training worker is being used.
-        # 2. A DistributedSampler has not already been added by the user.
-        # 3. The dataset is not an IterableDataset. Samplers do not worker with
-        # IterableDatasets.
-        def with_sampler(loader):
-            # Automatically set the DistributedSampler
-
-            # If using a sampler, the shuffle attribute in the
-            # DataLoader must be set to False.
-            # Instead the shuffling is determined by the shuffle attribute
-            # in the DistributedSampler.
-            # We identify if shuffling is enabled in the passed in
-            # DataLoader by seeing if the sampler for the DataLoader is a
-            # SequentialSampler.
-            shuffle = not isinstance(loader.sampler, SequentialSampler)
-
-            data_loader_args = {
-                "dataset": loader.dataset,
-                "batch_size": loader.batch_size,
-                "shuffle": False,
-                "num_workers": loader.num_workers,
-                "collate_fn": loader.collate_fn,
-                "pin_memory": loader.pin_memory,
-                "drop_last": loader.drop_last,
-                "timeout": loader.timeout,
-                "worker_init_fn": loader.worker_init_fn,
-                "sampler": DistributedSampler(loader.dataset, shuffle=shuffle)
-            }
-            return DataLoader(**data_loader_args)
-
-        data_loader = with_sampler(data_loader)
-
-        if move_to_device:
-            if torch.cuda.is_available():
-                rank = self.local_rank
-                device = torch.device(f"cuda:{rank}")
-            else:
-                device = torch.device("cpu")
-            data_loader = DistributedDL(data_loader, device)
-
-        return data_loader
+        # self.learner.dls.train = self.old_train_dl
+        # self.learner.dls.valid = self.old_valid_dl
 
 
-class DistributedDL(DataLoader):
-    def __init__(self, base_dataloader: DataLoader, device: torch.device):
-
-        self.__dict__.update(getattr(base_dataloader, "__dict__", {}))
-        self.dataloader = base_dataloader
-        self.device = device
-
-    def _move_to_device(self, item):
-        def try_move_device(i):
-            try:
-                i = i.to(self.device)
-            except AttributeError:
-                logger.debug(f"Item {i} cannot be moved to device "
-                             f"{self.device}.")
-            return i
-
-        return tuple(try_move_device(i) for i in item)
-
-    def __len__(self):
-        return len(self.dataloader)
-
-    def __iter__(self):
-        iterator = iter(self.dataloader)
-
-        for item in iterator:
-            yield self._move_to_device(item)

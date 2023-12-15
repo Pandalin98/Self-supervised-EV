@@ -44,7 +44,7 @@ parser.add_argument('--data_path', type=str, default='./data/local_data_structur
 parser.add_argument('--batch_size', type=int, default=2, help='batch size')
 parser.add_argument('--num_workers', type=int, default=8, help='number of workers for DataLoader')
 parser.add_argument('--scale', type=str, default=True, help='scale the input data')
-parser.add_argument('--dist',type=bool,default=False,help='distrubuted training')
+parser.add_argument('--dist',type=bool,default=True,help='distrubuted training')
 # RevIN
 parser.add_argument('--revin', type=int, default=0, help='reversible instance normalization')
 # Model args
@@ -76,6 +76,7 @@ parser.add_argument('--model_type', type=str, default='based_model', help='for m
 parser.add_argument('--finetuned_model_id', type=int, default=1, help='id of the saved finetuned model')
 # parser.add_argument('--pretrained_model', type=str, default='saved_models/CALCE_Battery/masked_patchtst/based_model/patchtst_pretrained_datasetCALCE_Battary_patch12_stride3_epochs-pretrain200_mask0.4_model1.pth', 
 #                     help='path of the pretrained model')
+parser.add_argument('--local_rank', type=int, default=-1, help='Local rank for distributed training')
 
 
 
@@ -407,7 +408,7 @@ if __name__ == '__main__':
         args.task_flag = 'linear_probe'
         args.head_type = 'prior_pooler'
         dataset_dict = get_dataset_dict(args)
-        args.batch_size = find_bs(args,dataset_dict)
+        # args.batch_size = find_bs(args,dataset_dict)
         # args.dset = args.dset_finetune----------------
         torch.cuda.empty_cache()
         dls = get_dls(args,dataset_dict)

@@ -60,11 +60,11 @@ class Learner(GetAttr):
         self.run_finder = False
         self.args = args        
         self.set_opt()
-        if args.dist:
-            self.to_distributed
+  
         if cbs and not isinstance(cbs, List): cbs = [cbs]    
-
         self.initialize_callbacks(cbs)        
+        if args.dist:
+            self.to_distributed()
 
 
     def set_opt(self):
@@ -512,13 +512,14 @@ class Learner(GetAttr):
                        sync_bn=True,  # Whether to replace all batch norm with `nn.SyncBatchNorm`
                        **kwargs
                        ):
-        local_rank = int(os.environ.get('LOCAL_RANK'))
-        world_size = int(os.environ.get('WORLD_SIZE'))
-        rank = int(os.environ.get('RANK'))
-        print('Process {} (out of {})'.format(
-            rank, torch.distributed.get_world_size()))
+        # local_rank = int(os.environ.get('LOCAL_RANK'))
+        # world_size = int(os.environ.get('WORLD_SIZE'))
+        # rank = int(os.environ.get('RANK'))
+        # print('Process {} (out of {})'.format(
+        #     rank, torch.distributed.get_world_size()))
+        print('begin distributing by DeepSpeed')
 
-        self.add_callback(DistributedTrainer(local_rank=local_rank, world_size=world_size, sync_bn=sync_bn, **kwargs))
+        self.add_callback(DistributedTrainer(**kwargs))
 
         return self
 
