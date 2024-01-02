@@ -31,5 +31,5 @@ def REP(pred, true):
     true = true.cpu().detach().numpy()
     pred = scaler.inverse_transform(pred)
     true = scaler.inverse_transform(true)
-    relative_errors = (1- np.abs((pred - true) / (true + epsilon))) * 100
+    relative_errors = np.abs((pred - true) / (true + epsilon))* 100
     return np.mean(relative_errors)

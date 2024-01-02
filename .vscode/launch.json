@@ -18,11 +18,11 @@
             "name": "Python: Deepspeed",
             "type": "python",
             "request": "launch",
-            "program": "/home/ps/anaconda3/envs/time_series/bin/deepspeed",
+            "program": "~/miniconda3/envs/time_series/bin/deepspeed",
             "justMyCode": true,
             "args": [
                 "--num_gpus=4",
-                "/data/home/ps/WYL/琶洲新能源电池比赛-正式代码/main.py",
+                "/root/data/main.py",
                 //这部分是传入main.py的参数
             ],
             "console": "integratedTerminal",

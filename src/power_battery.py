@@ -49,7 +49,8 @@ class PowerBatteryData(Dataset):
                 predict_input=None,
                 visual_data=False,
                 sort = False,
-                down_task = 'point_predict'
+                down_task = 'point_predict',
+                read_data_list = False
                  ):
         super().__init__()
         if size is None:
@@ -65,9 +66,6 @@ class PowerBatteryData(Dataset):
         self.train_cars = train_cars
         self.val_cars = val_cars
         self.sort = sort
-        self.__read_data__()
-        if visual_data:
-            self.visual_data()
         self.feature_columns =['vehicle_speed', 'vehicle_status', 'charge_status', 'mileage',
        'total_voltage', 'total_current', 'soc',
        'max_single_cell_voltage', 'min_single_cell_voltage', 'max_temperature',
@@ -83,15 +81,24 @@ class PowerBatteryData(Dataset):
             self.scaler['feature_scaler'] = joblib.load('./data/feature_scaler.pkl')
             self.scaler['target_scaler'] = joblib.load('./data/target_scaler.pkl')
             self.scaler['mileage_scaler'] = joblib.load('./data/mileage_scaler.pkl')
+            print('读取scaler成功')
         
         #已经设置好了，不需要更改
         self.scaler['prior_scaler'] = joblib.load('./data/prior_scaler.pkl')
 
-        if self.split == 'predict':
-            self.predict_decoder_input =predict_input
-        self.__get_battery_pair__()
-        #删除df_raw，减少内存占用
-        del self.df_raw
+        ## 选择是否读取data_list
+
+        if read_data_list:
+            with open('./data/list_data/{}_list.pkl'.format(split),'rb') as f:
+                load = pickle.load(f)
+                self.data_list = load.data_list
+                print('读取{}list数据成功'.format(split))
+        else:   
+            self.__read_data__()
+            if visual_data:
+                self.visual_data()
+            self.__get_battery_pin__()
+            del self.df_raw
 
 
 
@@ -115,9 +122,9 @@ class PowerBatteryData(Dataset):
                     vehicle_number = 'CL0'+vehicle_number[2]
                 self.df_raw[vehicle_number] = data
                 print('读取{}成功'.format(vehicle_number))
-                #TODO 调试选项
-                break
-        # for key,data_frame in self.df_raw.items():
+                # # 调试选项
+                # break
+                    # for key,data_frame in self.df_raw.items():
         #     data_frame.plot(x='mileage',y='charge_energy')
         #     plt.savefig('./data/visual_data/{}.png'.format(key))
     def visual_data(self):
@@ -159,19 +166,7 @@ class PowerBatteryData(Dataset):
         print('保存scaler成功')
         return self.scaler
     
-    def get_time_feature(self,data_frame_list):
-        time_list = []
-        for data_frame in data_frame_list:
-            data_frame_index = pd.to_datetime(data_frame[(data_frame['begin_charge_flag'] == 1)].index)
-            time_table = np.array([data_frame_index.month,
-            data_frame_index.weekday,
-            data_frame_index.day,
-            data_frame_index.hour])
-            time_list.append(time_table)
-        time_array = np.array(time_list)
-        #缩减一个维度
-        time_array = time_array.reshape(time_array.shape[0],time_array.shape[1])
-        return time_array
+
     
     def get_prior(self,df_list):
         
@@ -244,8 +239,14 @@ class PowerBatteryData(Dataset):
             return df
     
     ##重构数据
-    def __get_battery_pair__(self):
-        self.data_list = []
+    def __get_battery_pin__(self):
+        ###
+        # 构造数据指针
+        ###
+        pin_list = []
+        out_pin = 0
+        self.groups = {}
+        self.global_feature = {}
         #读取dict中的每一个dataframe
         ##按照key的顺序读取
         keys_ori = list(self.df_raw.keys())
@@ -258,116 +259,100 @@ class PowerBatteryData(Dataset):
             keys = keys_ori[self.train_cars:self.train_cars+self.val_cars]
         else:
             keys = keys_ori
-        self.frame_index ={}
-        decoder_index = 0
+        #逐个车辆开始构造
         for key in keys:
-                data_frame_all = self.df_raw[key]
-                data_frame_grobyed = data_frame_all.groupby(['cycle_flag'])
-                #把每一个 group 的 frame 按照 cycle_flag 的顺序存在一个 list 中
-                group_keys = list(data_frame_grobyed.groups.keys())  # 将groups转换为列表
-                group_keys.sort()  # 对列表进行排序
-                data_frame_list = [data_frame_grobyed.get_group(x) for x in group_keys]
-                print('车辆{}的有效充电循环数为{}'.format(key,len(data_frame_list)))
-                ##对于 data_frame_list 中的每一个 frame，进行日期的提取 
-                prior_list = self.get_prior(data_frame_list)
-                data_frame_list = [self.get_standarded(df) for df in data_frame_list]
-                if self.split != 'predict'  :
-                    total_len = len(data_frame_list)
-                    if total_len-self.input_len-self.output_len+1 <=0:
-                        continue
-                    for i in range(total_len-self.input_len-self.output_len+1):
-                        s_begin = i
-                        s_end = s_begin + self.input_len
-                        r_begin = s_end
-                        encoder_data = data_frame_list[s_begin:s_end]
-                        data = {}
-                        data['encoder_mark']=torch.tensor(self.get_time_feature(encoder_data),dtype=torch.float32)
-
-                        input_mileage = np.array([df[(df['begin_charge_flag'] == 1)]['mileage'] for df in encoder_data]).reshape(-1,1)
-                        #限制输入长度
-                        encoder_data = [torch.from_numpy(df[self.feature_columns].values[:3000,:]) for df in encoder_data]
-                        padded_encoder_tensor = pad_sequence(encoder_data, batch_first=True) 
-                        # encoder_data = self.__pad_stack__(encoder_data)
-                        #读取data_frame_list中的每一个frame的['begin_charge_flag']==1
-                        decoder_data_all = pd.concat(df[(df['begin_charge_flag'] == 1)] for df in data_frame_list[r_begin:])
-                        #选出时间超过last_time 15天的数据
-                        decoder_data_all.index = pd.to_datetime(decoder_data_all.index)
-                        last_time = decoder_data_all.index[0]
-                        begin_predict = last_time + timedelta(days=15)
-                        last_predcit = last_time + timedelta(days=30*6)
-                        decoder_data = decoder_data_all.truncate(before = begin_predict,after = last_predcit)
-                        decoder_input =  decoder_data['mileage'].values.reshape(-1,1)
-                        mileage = np.concatenate((input_mileage,decoder_input),axis=0)
-                        time_table = np.array([decoder_data.index.month,
-                            decoder_data.index.weekday,
-                            decoder_data.index.day,
-                            decoder_data.index.hour]).T
-                        
-                        #构建dict  
-                        data['prior']=torch.tensor(prior_list[s_begin:s_end],dtype=torch.float32)
-                        data['encoder_input']=torch.tensor(padded_encoder_tensor,dtype=torch.float32)
-                        data['decoder_input'] = torch.tensor(mileage,dtype=torch.float32)
-                        data['decoder_mark'] =torch.tensor(time_table,dtype=torch.float32)
-                        data['fixed_capacity'] =torch.tensor( decoder_data['fixed_capacity'].values,dtype=torch.float32)
-                        data['charge_energy'] =torch.tensor( decoder_data['charge_energy'].values,dtype=torch.float32)
-                        
-                        self.data_list.append(data)
-
-                # if self.split == 'predict':
-                #         data = {}
-                #         decoder_input = self.predict_decoder_input
-                #         #选出 car_id = key的数据
-                #         decoder_input['mileage'] = self.scaler['mileage_scaler'].transform(decoder_input['mileage'].values.reshape(-1,1))
-                #         decoder_mark = decoder_input[decoder_input['car_id']==key][time_feature]
-                #         decoder_milage = decoder_input[decoder_input['car_id']==key]['mileage'].values.reshape(-1,1)
-                #         encoder_data = data_frame_list[-self.input_len:]
-                #         data['encoder_mark']=self.get_time_feature(encoder_data)
-                #         input_mileage = [df[(df['begin_charge_flag'] == 1)]['mileage'].values for df in encoder_data]
-                #         data['input_mileage']=input_mileage
-                #         prior = [df['charge_energy'].values[-1] for df in encoder_data]
-                #         encoder_data = [df[self.feature_columns].values for df in encoder_data]
-                #         prior = np.array(prior).reshape(-1,1)
-                #         encoder_list = [torch.from_numpy(arr) for arr in encoder_data] 
-                #         padded_encoder_tensor = pad_sequence(encoder_list, batch_first=True)
-                #         mileage = np.concatenate((input_mileage,decoder_milage),axis=0)
-                #         data['decoder_input'] = mileage
-                #         data['decoder_mark']= decoder_mark.values
-                #         data['encoder_input'] = padded_encoder_tensor
-                #         data['prior'] = prior
-                #         self.data_list.append(data)
-        self.frame_index = {element: key for key, value in self.frame_index.items() for element in value}
-        self.total_length = decoder_index
-        # exit()
-        # 保存sclaer的文件
-        # all_prior_concatenated = np.concatenate(all_prior, axis=0)
-        # scaler = MinMaxScaler()
-        # scaler.fit(all_prior_concatenated)
-        # #保存scaler到./data下
-        # joblib.dump(scaler, './data/prior_scaler.pkl')
-        # exit()
-    # 初始化其他部分
-
+            in_pin = 0
+            global_list = []
+            data_frame_all = self.df_raw[key]
+            data_frame_grobyed = data_frame_all.groupby(['cycle_flag'])
+            group_keys = list(data_frame_grobyed.groups.keys())  # 将groups转换为列表
+            group_keys.sort()  # 对列表进行排序
+            data_frame_list = [data_frame_grobyed.get_group(x) for x in group_keys]
+            print('车辆{}的有效充电循环数为{}'.format(key,len(data_frame_list)))
+            prior_list = self.get_prior(data_frame_list)
+            data_frame_list = [self.get_standarded(df) for df in data_frame_list]
+            global_df = self.get_global_feature(data_frame_list)
+            global_df['prior'] = prior_list.tolist()
+            self.global_feature[key] = global_df  
+            total_len = len(data_frame_list)
+            if total_len-self.input_len-self.output_len+1 <=0:
+                continue
+            self.groups[key] = data_frame_list
+            for i in range(total_len-self.input_len-self.output_len+1):
+                pin_list.append({
+                    'out_pin': out_pin,
+                    'in_pin': in_pin,
+                    'vehicle_number': key,
+                })
+                in_pin = in_pin + 1
+                out_pin = out_pin + 1
+                
+        pin_df = pd.DataFrame(pin_list).set_index('out_pin')
+        self.pin_df = pin_df    
+    
+    def get_global_feature(self,df_list):
+        global_list = []
+        for cycle_data in df_list:
+            decoder_data = cycle_data[(cycle_data['begin_charge_flag'] == 1)]
+            charge_energy = decoder_data['charge_energy'].values
+            fixed_capacity = decoder_data['fixed_capacity'].values
+            time_table = np.array([decoder_data.index.month,
+                decoder_data.index.weekday,
+                decoder_data.index.day,
+                decoder_data.index.hour])
+            mileage = decoder_data['mileage'].values
+            global_list.append({
+                'time_table': time_table,
+                'mileage': mileage,
+                'charge_energy': charge_energy,
+                'fixed_capacity': fixed_capacity})
+        global_df = pd.DataFrame(global_list)
+        return global_df
 
     def __len__(self):
-        if self.split == 'predict':
-            return len(self.data_list)
-        if self.split == 'pretrain':
-            return len(self.data_list)
-        else:
-            return len(self.data_list)
+        return len(self.pin_df)
 
-
+    def __get_battery_pair__(self, index):
+        ###
+        # 提取数据对
+        ###
+        pin = self.pin_df.loc[index]
+        
+        data = {}
+        data_frame_list = self.groups[pin['vehicle_number']]
+        global_feature = self.global_feature[pin['vehicle_number']]
+        
+        i  = pin['in_pin']
+        s_begin = i
+        s_end = s_begin + self.input_len
+        r_begin = s_end
+        r_end = r_begin + self.output_len
+        encoder_data = data_frame_list[s_begin:s_end]
+        encoder_data = [torch.from_numpy(df[self.feature_columns].values[:3000,:]) for df in encoder_data]
+        padded_encoder_tensor = pad_sequence(encoder_data, batch_first=True)
+        data['encoder_input'] = padded_encoder_tensor
+        data['prior'] = torch.tensor(np.stack(global_feature['prior'].iloc[s_begin:s_end].values),dtype=torch.float32)
+        data['encoder_mark']=torch.tensor(np.stack(global_feature['time_table'].iloc[s_begin:s_end].values),dtype=torch.float32)
+        data['decoder_input'] = torch.tensor(np.stack(global_feature['mileage'].iloc[s_begin:r_end].values),dtype=torch.float32)
+        data['decoder_mark'] =torch.tensor(np.stack(global_feature['time_table'].iloc[r_begin:r_end].values),dtype=torch.float32)
+        data['fixed_capacity'] = torch.tensor(np.stack(global_feature['fixed_capacity'].iloc[r_begin:r_end].values),dtype=torch.float32)
+        data['charge_energy'] = torch.tensor(np.stack(global_feature['charge_energy'].iloc[r_begin:r_end].values),dtype=torch.float32)
+        return data
+        
     def __getitem__(self, index):
+        
+        data = self.__get_battery_pair__(index)
+        
         dict = {}
-        dict['encoder_input'] = self.data_list[index]['encoder_input']
-        dict['prior'] = self.data_list[index]['prior']
-        dict['decoder_input'] = self.data_list[index]['decoder_input']
-        dict['encoder_mark'] = self.data_list[index]['encoder_mark']
-        dict['decoder_mark'] = self.data_list[index]['decoder_mark']
+        dict['encoder_input'] = data['encoder_input']
+        dict['prior'] = data['prior']
+        dict['encoder_mark'] = data['encoder_mark']
+        dict['decoder_input'] = data['decoder_input']
+        dict['decoder_mark'] = data['decoder_mark']
         if self.down_task == 'point_predict':
-            dict['label'] = self.data_list[index]['fixed_capacity']
+            dict['label'] = data['fixed_capacity']
         if self.down_task == 'interval_predict':
-            dict['label'] = self.data_list[index]['charge_energy'] 
+            dict['label'] = data['charge_energy']
         
         return dict
 
@@ -398,10 +383,18 @@ def Vari_len_collate_func(batch_dic):
 if __name__ == '__main__':
 
 
-    data_set = PowerBatteryData(size=(32,3),split='pretrain',visual_data=False,scale=None)
-
+    data_set_pretrain = PowerBatteryData(size=(32,3),split='pretrain',visual_data=False,scale=True,read_data_list=False)
+    # with open('./data/list_data/pretrain_list.pkl','wb') as f:
+    #     pickle.dump(data_set_pretrain,f)
+    # data_set_train = PowerBatteryData(size=(32,3),split='train',visual_data=False,scale=True,read_data_list=False)
+    # # with open('./data/list_data/train_list.pkl','wb') as f:
+    # #     pickle.dump(data_set_train,f)
+    # data_set_val = PowerBatteryData(size=(32,3),split='val',visual_data=False,scale=True,read_data_list=False)
+    # with open('./data/list_data/val_list.pkl','wb') as f:
+    #     pickle.dump(data_set_val,f)
+    
     data_loader = DataLoader(
-        data_set,
+        data_set_pretrain,
         batch_size=16,
         shuffle=True,
         drop_last=True,

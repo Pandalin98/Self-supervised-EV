@@ -153,12 +153,17 @@ class TrackTrainingCB(Callback):
         values = {}
         # calculate loss after each epoch        
         n = sum(self.batch_recorder['n_samples'])   # get total number of samples        
-        values['loss'] = sum(self.batch_recorder['batch_losses']).item()/n  # averaging
+        #将batch_losses中的非nan值取出来，然后求和，再除以n，得到平均值
+        values['loss'] = sum([loss for loss in self.batch_recorder['batch_losses'] if not torch.isnan(loss)]).item()/n
         if self.learner.flag == 'pretrain':
             values['recon_loss'] = sum(self.batch_recorder['recon_losses']).item()/n
             values['kl_loss'] = sum(self.batch_recorder['kl_losses']).item()/n
         # calculate metrics if available after each epoch
         if len(self.preds) == 0: return values
+        ## 去除列表中长度为零的
+        self.preds = [pred for pred in self.preds if pred.shape[-1] != 0]
+        self.targs = [targ for targ in self.targs if targ.shape[-1] != 0]
+        
         try :
             self.preds = torch.cat(self.preds)
             self.targs = torch.cat(self.targs)        
@@ -290,6 +295,8 @@ class SaveModelCB(TrackerCB):
             if self.new_best:
                 print(f'Better model found at epoch {self.epoch} with {self.monitor} value: {self.best}.')
                 self._save(f'{self.fname}', self.path)
+            if self.epoch==self.n_epochs-1: 
+                self._save(f'{self.fname}_{self.epoch}', self.path)                     
 
     def after_fit(self):
         if self.run_finder: return
