@@ -122,7 +122,7 @@ def data_processing(read_path,write_path):
             charge = np.array(charge_list)
             mileage = np.array(mileage_list)
             mileage_len = mileage[-1]-mileage[0]
-            n_split = max(int(mileage_len/10000),4)
+            n_split = max(int(mileage_len/1000),4)
             energy_data = pd.DataFrame({'charge_energy':charge, 'mileage':mileage})
 
             ##过滤数据
@@ -155,10 +155,10 @@ def data_processing(read_path,write_path):
             # plt.scatter(mileage, charge, color='gray', alpha=0.5)
             # plt.plot(mileage, smoothed_capacity, color='red')
             # plt.show()
+            # 在feature_data中增加一列，对应的charge_energy和smoothed_capacity
             for i in range(len(charge_list)):
                 feature_data.loc[feature_data['charge_energy'] == charge_list[i], 'fixed_capacity'] = smoothed_capacity[i]
-
-            #在feature_data中增加一列，对应的charge_energy和smoothed_capacity
+            feature_data = feature_data[feature_data['charge_energy'].isin(energy_data['charge_energy'])]
             if not os.path.exists(write_path):
                 os.makedirs(write_path)
             output_path = os.path.join(write_path, '{}_output.parquet'.format(car_id))

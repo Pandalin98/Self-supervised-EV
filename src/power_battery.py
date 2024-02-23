@@ -13,14 +13,13 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler,StandardScaler
 import joblib
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
 #去除警告
 import warnings
 from torch.nn.utils.rnn import pad_sequence
-import joblib
 from datetime import timedelta
 import random
 import math
@@ -44,8 +43,8 @@ class PowerBatteryData(Dataset):
                  split='pretrain',
                  size=None,
                  scale=True,         
-                 train_cars=16,     
-                 val_cars=4,        
+                 train_cars=15,     
+                 val_cars=3,        
                 predict_input=None,
                 visual_data=False,
                 sort = False,
@@ -74,6 +73,9 @@ class PowerBatteryData(Dataset):
        'motor_controller_input_voltage', 'motor_controller_dc_bus_current',
        'rechargeable_energy_storage_device_current']+['cycle_flag']
         self.down_task = down_task
+
+        
+        self.__read_data__()
         if self.scaler is None:
             self.scaler = self.get_standard_scaler()    
         else:
@@ -81,24 +83,13 @@ class PowerBatteryData(Dataset):
             self.scaler['feature_scaler'] = joblib.load('./data/feature_scaler.pkl')
             self.scaler['target_scaler'] = joblib.load('./data/target_scaler.pkl')
             self.scaler['mileage_scaler'] = joblib.load('./data/mileage_scaler.pkl')
+            self.scaler['prior_scaler'] = joblib.load('./data/prior_scaler.pkl')
             print('读取scaler成功')
         
-        #已经设置好了，不需要更改
-        self.scaler['prior_scaler'] = joblib.load('./data/prior_scaler.pkl')
-
-        ## 选择是否读取data_list
-
-        if read_data_list:
-            with open('./data/list_data/{}_list.pkl'.format(split),'rb') as f:
-                load = pickle.load(f)
-                self.data_list = load.data_list
-                print('读取{}list数据成功'.format(split))
-        else:   
-            self.__read_data__()
-            if visual_data:
-                self.visual_data()
-            self.__get_battery_pin__()
-            del self.df_raw
+        if visual_data:
+            self.visual_data()
+        self.__get_battery_pin__()
+        del self.df_raw
 
 
 
@@ -147,8 +138,8 @@ class PowerBatteryData(Dataset):
         ##把字典中所有self.df_raw放在一个dataframe中
         df = pd.concat(self.df_raw.values(), ignore_index=True)
         feature_scaler = MinMaxScaler()
-        target_scaler = MinMaxScaler()
-        mileage_scaler = MinMaxScaler()
+        target_scaler = StandardScaler()
+        mileage_scaler = StandardScaler()
 
         ##fit charge_energy
         target_scaler.fit(df['charge_energy'].values.reshape(-1, 1))
@@ -163,7 +154,25 @@ class PowerBatteryData(Dataset):
         joblib.dump(feature_scaler, './data/feature_scaler.pkl')
         joblib.dump(target_scaler, './data/target_scaler.pkl')
         joblib.dump(mileage_scaler, './data/mileage_scaler.pkl')
+        
+        keys = list(self.df_raw.keys())
+        prior_total = []
+        for key in keys:
+            data_frame_all = self.df_raw[key]
+            data_frame_grobyed = data_frame_all.groupby(['cycle_flag'])
+            group_keys = list(data_frame_grobyed.groups.keys())  # 将groups转换为列表
+            group_keys.sort()  # 对列表进行排序
+            data_frame_list = [data_frame_grobyed.get_group(x) for x in group_keys]
+            prior_list = self.get_prior(data_frame_list)
+            prior_total.append(prior_list)
+        prior_total = pd.DataFrame(np.concatenate(prior_total,axis=0))
+        prior_scaler = StandardScaler()
+        prior_scaler.fit(prior_total)
+        self.scaler['prior_scaler'] = prior_scaler
+        joblib.dump(prior_scaler, './data/prior_scaler.pkl')
         print('保存scaler成功')
+
+        
         return self.scaler
     
 
@@ -219,12 +228,10 @@ class PowerBatteryData(Dataset):
         hf5 = soc_propotion(df_list,SOCv=19)
             
         ##6.充电容量
-        hf6 = [df['charge_energy'][0] for df in df_list]
+        hf6 = [df['fixed_capacity'][0] for df in df_list]
         
         #将hf1-hf6横向拼接
         HF = np.column_stack((hf1,hf2,hf3,hf4,hf5,hf6))
-        #归一化到0-1空间
-        HF = self.scaler['prior_scaler'].transform(HF)
         
         ##将NAN替换为对应列的均值
         HF = np.nan_to_num(HF, nan=np.nanmean(HF, axis=0))
@@ -252,11 +259,11 @@ class PowerBatteryData(Dataset):
         keys_ori = list(self.df_raw.keys())
         # keys_ori.sort()
         if self.split == 'train':
-            keys = keys_ori[:self.train_cars]
+            keys = keys_ori[:self.train_cars+self.val_cars]
         elif self.split == 'val':
-            keys = keys_ori[self.train_cars:self.train_cars+self.val_cars]
+            keys = keys_ori[self.train_cars+self.val_cars:]
         elif self.split == 'test':
-            keys = keys_ori[self.train_cars:self.train_cars+self.val_cars]
+            keys = keys_ori[self.train_cars+self.val_cars:]
         else:
             keys = keys_ori
         #逐个车辆开始构造
@@ -267,17 +274,21 @@ class PowerBatteryData(Dataset):
             data_frame_grobyed = data_frame_all.groupby(['cycle_flag'])
             group_keys = list(data_frame_grobyed.groups.keys())  # 将groups转换为列表
             group_keys.sort()  # 对列表进行排序
+            #创建原始大的dataframe
             data_frame_list = [data_frame_grobyed.get_group(x) for x in group_keys]
+            prior_list = self.scaler['prior_scaler'].transform(self.get_prior(data_frame_list))
             print('车辆{}的有效充电循环数为{}'.format(key,len(data_frame_list)))
-            prior_list = self.get_prior(data_frame_list)
+            #构建global_feature
             data_frame_list = [self.get_standarded(df) for df in data_frame_list]
-            global_df = self.get_global_feature(data_frame_list)
+            global_df = self.get_global_feature(data_frame_list)        
             global_df['prior'] = prior_list.tolist()
             self.global_feature[key] = global_df  
-            total_len = len(data_frame_list)
+            ##构建encoder_data
+            encoder_data = [torch.from_numpy(df[self.feature_columns].values[:3000,:]) for df in data_frame_list]
+            total_len = len(encoder_data)
             if total_len-self.input_len-self.output_len+1 <=0:
                 continue
-            self.groups[key] = data_frame_list
+            self.groups[key] = encoder_data
             for i in range(total_len-self.input_len-self.output_len+1):
                 pin_list.append({
                     'out_pin': out_pin,
@@ -328,13 +339,13 @@ class PowerBatteryData(Dataset):
         r_begin = s_end
         r_end = r_begin + self.output_len
         encoder_data = data_frame_list[s_begin:s_end]
-        encoder_data = [torch.from_numpy(df[self.feature_columns].values[:3000,:]) for df in encoder_data]
+        # encoder_data = [torch.from_numpy(df[self.feature_columns].values[:3000,:]) for df in encoder_data]
         padded_encoder_tensor = pad_sequence(encoder_data, batch_first=True)
-        data['encoder_input'] = padded_encoder_tensor
+        data['encoder_input'] = torch.tensor(padded_encoder_tensor,dtype=torch.float32)
         data['prior'] = torch.tensor(np.stack(global_feature['prior'].iloc[s_begin:s_end].values),dtype=torch.float32)
         data['encoder_mark']=torch.tensor(np.stack(global_feature['time_table'].iloc[s_begin:s_end].values),dtype=torch.float32)
         data['decoder_input'] = torch.tensor(np.stack(global_feature['mileage'].iloc[s_begin:r_end].values),dtype=torch.float32)
-        data['decoder_mark'] =torch.tensor(np.stack(global_feature['time_table'].iloc[r_begin:r_end].values),dtype=torch.float32)
+        data['decoder_mark'] =torch.tensor(np.stack(global_feature['time_table'].iloc[s_begin:r_end].values),dtype=torch.float32)
         data['fixed_capacity'] = torch.tensor(np.stack(global_feature['fixed_capacity'].iloc[r_begin:r_end].values),dtype=torch.float32)
         data['charge_energy'] = torch.tensor(np.stack(global_feature['charge_energy'].iloc[r_begin:r_end].values),dtype=torch.float32)
         return data
@@ -346,14 +357,16 @@ class PowerBatteryData(Dataset):
         dict = {}
         dict['encoder_input'] = data['encoder_input']
         dict['prior'] = data['prior']
-        dict['encoder_mark'] = data['encoder_mark']
+        dict['encoder_mark'] = data['encoder_mark'].squeeze(-1)
         dict['decoder_input'] = data['decoder_input']
-        dict['decoder_mark'] = data['decoder_mark']
-        if self.down_task == 'point_predict':
-            dict['label'] = data['fixed_capacity']
-        if self.down_task == 'interval_predict':
-            dict['label'] = data['charge_energy']
-        
+        dict['decoder_mark'] = data['decoder_mark'].squeeze(-1)
+        # if self.down_task == 'point_predict':
+        #     dict['label'] = data['fixed_capacity'].squeeze(-1)
+        # if self.down_task == 'interval_predict':
+        #     dict['label'] = data['charge_energy'].squeeze(-1)
+        # dict['label'] = data['charge_energy'].squeeze(-1)s
+        dict['label'] = data['charge_energy'].squeeze(-1)
+
         return dict
 
 
@@ -383,7 +396,7 @@ def Vari_len_collate_func(batch_dic):
 if __name__ == '__main__':
 
 
-    data_set_pretrain = PowerBatteryData(size=(32,3),split='pretrain',visual_data=False,scale=True,read_data_list=False)
+    data_set_pretrain = PowerBatteryData(size=(32,3),split='pretrain',visual_data=False,scale=None,read_data_list=False)
     # with open('./data/list_data/pretrain_list.pkl','wb') as f:
     #     pickle.dump(data_set_pretrain,f)
     # data_set_train = PowerBatteryData(size=(32,3),split='train',visual_data=False,scale=True,read_data_list=False)

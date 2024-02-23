@@ -1,4 +1,4 @@
-import deepspeed
+# import deepspeed
 from .core import Callback
 import torch
 from typing import Optional, Dict, Any

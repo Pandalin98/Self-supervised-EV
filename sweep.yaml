@@ -1,0 +1,10 @@
+program: main.py
+method: bayes
+metric:
+  name: linear_probe_test_mae
+  goal: minimize
+parameters:
+  n_layers_dec:
+    values: [1,2,3,4,5]
+  head_dropout:
+    values: [0.05, 0.15, 0.20,0.30,0.40,0.50]

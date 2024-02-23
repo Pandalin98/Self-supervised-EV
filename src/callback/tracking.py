@@ -38,6 +38,7 @@ class TrackTrainingCB(Callback):
     def __init__(self, train_metrics=False, valid_metrics=True,args=None):
         super().__init__()        
         self.train_metrics, self.valid_metrics = train_metrics, valid_metrics 
+        self.test_metrics = valid_metrics
         self.args = args
 
     def init_cb_(self):
@@ -57,6 +58,9 @@ class TrackTrainingCB(Callback):
         if self.learner.dls: 
             if not self.learner.dls.valid: self.valid_metrics = False    
             else: self.valid_loss = True
+            if not self.learner.dls.test: self.test_metrics = False 
+            else: self.test_loss = True
+            
 
         if self.metrics:
             if not isinstance(self.metrics, list): self.metrics = [self.metrics]   
@@ -66,10 +70,12 @@ class TrackTrainingCB(Callback):
     def initialize_recorder(self):
         recorder = {'epoch': [],  'train_loss': []} 
         if self.valid_loss: recorder['valid_loss'] = []
+        if self.test_loss: recorder['test_loss'] = []
         if self.learner.flag == 'pretrain': recorder['recon_loss'] , recorder['kl_loss'] = [],[]
         for name in self.metric_names: 
             if self.train_metrics: recorder['train_'+name] = []            
             if self.valid_metrics: recorder['valid_'+name] = []
+            if self.test_metrics: recorder['test_'+name] = []
         self.recorder = recorder        
         self.learner.recorder = recorder            
         
@@ -100,6 +106,11 @@ class TrackTrainingCB(Callback):
         self.initialize_batch_recorder(with_metrics=self.valid_metrics)
         self.reset()
 
+    def before_epoch_test(self):            
+        # if valid data is available, define storage for batch training loss and metrics
+        # if self.dls.valid:  self.initialize_batch_recorder(with_metrics=self.valid_metrics)
+        self.initialize_batch_recorder(with_metrics=self.test_metrics)
+        self.reset()
 
     def after_epoch_train(self):         
         values = self.compute_scores()           
@@ -124,10 +135,23 @@ class TrackTrainingCB(Callback):
         if self.valid_metrics:
             for name, func in zip(self.metric_names, self.metrics): 
                 self.recorder['valid_'+name].append( values[name] ) 
-            
+    
+    def after_epoch_test(self):
+        # if there is no test data, don't store
+        if not self.learner.dls.test: return
+        values = self.compute_scores()
+        self.recorder['test_loss'].append( values['loss'] )
+        if self.test_metrics:
+            for name, func in zip(self.metric_names, self.metrics): 
+                self.recorder['test_'+name].append( values[name] )
     
     def after_batch_train(self): self.accumulate()  # save batch recorder                
     def after_batch_valid(self): self.accumulate()
+    def after_batch_test(self): 
+        try:
+            self.accumulate()
+        except:
+            pass
         
     def accumulate(self):
         xb, target = self.xb,self.target

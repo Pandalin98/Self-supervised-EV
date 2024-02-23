@@ -63,8 +63,8 @@ class Learner(GetAttr):
   
         if cbs and not isinstance(cbs, List): cbs = [cbs]    
         self.initialize_callbacks(cbs)        
-        if args.dist:
-            self.to_distributed()
+        # if args.dist:
+        #     self.to_distributed()
 
 
     def set_opt(self):
@@ -182,6 +182,16 @@ class Learner(GetAttr):
         except KeyboardInterrupt: pass 
         self('after_fit')
 
+
+    def Probability_prediction_loss(self, pred, target):
+        """
+        preds:   [bs x time_length  x feature_dim]
+        targets: [bs x time_length  x feature_dim] 
+        """
+        
+        loss = F.binary_cross_entropy_with_logits(pred, target)
+        return loss
+
          
     def fit_downstreams(self, n_epochs,loss_func, lr_max=None, lr=None, cbs=None, do_valid=True,pct_start=0.3):
         " fit the model to the label target "        
@@ -217,7 +227,8 @@ class Learner(GetAttr):
                     self.opt.step() 
                     self('after_batch_train')  
                 self('after_epoch_train')               # if self.dls.valid:                    
-                if do_valid: self.epoch_validate()                   
+                if do_valid: self.epoch_validate(),self.epoch_test() 
+                                  
                 self('after_epoch')                 
         except KeyboardInterrupt: pass 
         self('after_fit')
@@ -257,7 +268,7 @@ class Learner(GetAttr):
         self.fit_downstreams(n_epochs,loss_func=loss_func, lr_max=base_lr, pct_start=pct_start)
     
 
-    def lr_finder(self,task_flag, start_lr=1e-7, end_lr=1e-3, num_iter=100, step_mode='exp', show_plot=False, suggestion='valley',loss_func=None):                
+    def lr_finder(self,task_flag, start_lr=1e-5, end_lr=1e-3, num_iter=100, step_mode='exp', show_plot=False, suggestion='valley',loss_func=None):                
         """
         find the learning rate
         """
@@ -289,6 +300,16 @@ class Learner(GetAttr):
         if self.dl:        
             with torch.no_grad(): self.all_batches('valid')
         self('after_epoch_valid')
+
+    def epoch_test(self, dl=None):
+        self('before_epoch_test')
+        # model at evaluation mode  
+        self.model.eval()                
+        self.dl = dl if dl else self.dls.test
+        if self.dl:        
+            with torch.no_grad(): self.all_batches('test')
+        self('after_epoch_test')
+
 
 
     def all_batches(self, type_):
@@ -353,14 +374,15 @@ class Learner(GetAttr):
         return pred 
     
     def _do_batch_test(self):   
-        self.pred, self.target = self.test_step(self.batch)     
+        self.pred, self.target,self.loss = self.test_step(self.batch)     
            
     def test_step(self, batch):
         # get the inputs
-        self.xb, self.target,self.prior =   batch['feature'],batch['label'],batch['prior']
+        self.xb, self.target,self.prior,self.xb_mark,self.xb_dec,self.dec_mark = self.batch['encoder_input'],self.batch['label'],self.batch['prior'],self.batch['encoder_mark'],self.batch['decoder_input'],self.batch['decoder_mark']                    # forward
         # forward
         pred = self.model_forward()
-        return pred, self.target
+        loss = self.loss_func(pred, self.target)
+        return pred, self.target,loss
 
 
     def _predict(self, dl=None):
@@ -420,7 +442,7 @@ class Learner(GetAttr):
         self.preds, self.targets = to_numpy([cb.preds, cb.targets])
         # calculate scores
         if scores: 
-            s_vals = [score(cb.targets, cb.preds).to('cpu').numpy() for score in list(scores)]
+            s_vals = [score(cb.targets, cb.preds) for score in list(scores)]
             return self.preds, self.targets, s_vals
         else: return self.preds, self.targets
 

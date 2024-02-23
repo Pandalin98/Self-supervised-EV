@@ -8,3 +8,5 @@ result_predict/
 *.png
 *.pyc
 *.html
+result/
+修正容量结果文件/

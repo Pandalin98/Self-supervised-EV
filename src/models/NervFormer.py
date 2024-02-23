@@ -1,7 +1,7 @@
 
 __all__ = ['NervFormer']
 import sys
-sys.path.append('/data/home/ps/WYL/power_battery')
+sys.path.append('/data/home/ps/WYL/琶洲新能源电池比赛-正式代码')
 # Cell
 from typing import Callable, Optional
 import torch
@@ -15,6 +15,8 @@ from src.models.layers.basics import *
 from src.models.layers.attention import *
 from src.models.layers.Embed import Patch_Emb,Decoder_Emb,TemporalEmbedding
 from src.models.layers.SelfAttention_Family import AttentionLayer, FullAttention
+from gluonts.torch.distributions import DistributionOutput, StudentTOutput
+from einops import rearrange, repeat
 # Cell
 ##Define the symbol 
 ## batch size : bs
@@ -36,10 +38,9 @@ class NervFormer(nn.Module):
         n_layers_dec: int = 1,
         d_model: int = 128,
         n_heads: int = 16,
-        n_heads_dec: int = 8,
         shared_embedding: bool = True,
         d_ff: int = 256,
-        norm: str = 'BatchNorm',
+        norm: str = 'LayerNorm',
         attn_dropout: float = 0.0,
         dropout: float = 0.0,
         act: str = "gelu",
@@ -56,11 +57,16 @@ class NervFormer(nn.Module):
         prior_dim: int = 1,
         output_attention: bool = False,
         input_len: int = 32,
+        output_len: int = 12,
+        prob_output = False,
+        
+        distr_output: DistributionOutput = StudentTOutput(),
         **kwargs
     ):
         super().__init__()
         self.y_range = y_range
-        self.output_len = target_dim
+        self.target_dim = target_dim
+        self.output_len = output_len
         self.input_len = input_len
         assert head_type in ['pretrain', 'prior_pooler', 'regression', 'classification'], 'head type should be either pretrain, prediction, or regression'
         
@@ -83,6 +89,7 @@ class NervFormer(nn.Module):
             pe=pe,
             learn_pe=learn_pe,
             verbose=verbose,
+            norm=norm,
             **kwargs
         )
         
@@ -90,9 +97,9 @@ class NervFormer(nn.Module):
         self.decoder = TransformerDecoder(
             TransformerDecoderLayer(
                 d_model=d_model,
-                nhead=n_heads_dec,
+                nhead=n_heads,
                 dim_feedforward=d_ff,
-                dropout=dropout,
+                dropout=head_dropout,
             ),
             num_layers=n_layers_dec,
             norm=nn.Sequential(Transpose(1, 2), nn.BatchNorm1d(d_model), Transpose(1, 2))
@@ -100,18 +107,7 @@ class NervFormer(nn.Module):
             else nn.LayerNorm(d_model)
         )
         
-        self.decoder_AR = TransformerDecoder(
-            TransformerDecoderLayer(
-                d_model=d_model,
-                nhead=n_heads_dec,
-                dim_feedforward=d_ff,
-                dropout=dropout,
-            ),
-            num_layers=n_layers_dec,
-            norm=nn.Sequential(Transpose(1, 2), nn.BatchNorm1d(d_model), Transpose(1, 2))
-            if norm == 'BatchNorm'
-            else nn.LayerNorm(d_model)
-        )
+
         
         self.output_attention = output_attention
         self.TemporalEmbedding = TemporalEmbedding(d_model=d_model)
@@ -127,22 +123,35 @@ class NervFormer(nn.Module):
             self.head_re = PretrainHead_regression(d_model, patch_len, self.n_vars, head_dropout)
             self.head_cons_z = PretrainHead_constrat(d_model)
             self.head_cons_prior = PretrainHead_constrat(d_model)
-        elif head_type == "prior_pooler":
-            self.head = Prior_Attention_Pooler(d_model, d_ff, d_model, head_dropout, output_attention_flag=output_attention)
         elif head_type == "regression":
             self.head = RegressionHead('mean', d_model, target_dim, head_dropout, y_range)
         elif head_type == "classification":
             self.head = ClassificationHead(self.n_vars, d_model, target_dim, head_dropout)
         
-        self.output_mile = nn.Linear(d_model, 1)
-        self.output_dec = nn.Linear(d_model, 1)
-        self.output_AR = nn.Linear(d_model, 1)
+        # self.feature_fuison = AttentionFeatureFusion(1, d_model, d_model)
+        
+        #容量投影
+        self.cap_project = nn.Linear(1, d_model)
+
+        # self.cap_project = nn.Linear(self.input_len, self.output_len)
+        #表征投影
+        self.Z_project = nn.Linear(d_model, 1)
+        
+        # self.distr_output = DistrubutionOutput_Layer(12,distr_output)
+        # self.prob_output = prob_output
         
     def forward(self, enc_in, prior, dec_in, enc_mark,dec_mark):
-        bs, cl, np, fl = enc_in.shape
+        ##在第二维度取均值
+        
+        bs, cl, np, fl = enc_in.shape  
         enc_in = enc_in.view(bs * cl, np, fl)
         ##dec_in 增加一个维度，在最后
-        _,output_len,_= dec_in.shape
+        _,full_len,_= dec_in.shape
+        capacity = prior[:,:,-1]
+        capacity_mean = capacity.mean(1, keepdim=True).detach()
+        capacity = capacity - capacity_mean
+        # stdev = torch.sqrt(torch.var(capacity, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        # capacity = capacity / stdev
         #encoder part
         if self.head_type == "pretrain":
             prior = self.prior_projection(prior)
@@ -153,44 +162,75 @@ class NervFormer(nn.Module):
             return re, con1, con2
         else:
             z_enc = self.backbone(enc_in)
-            if self.head_type == "prior_pooler":
-                prior = prior.view(bs * cl, self.prior_dim)
-                prior = self.prior_projection(prior)
-                z_enc_out = self.head(z_enc, prior)
-            else:
-                z_enc_out = self.head(z_enc)
+            # if self.head_type == "prior_pooler":
+            #     prior = prior.view(bs * cl, self.prior_dim)
+            #     prior = self.prior_projection(prior)
+            #     z_enc_out = self.head(z_enc, prior)
+            # else:
+            #     z_enc_out = self.head(z_enc)
                         
         #decoder part
-            z_enc_out = z_enc_out.view(bs, cl, self.d_model)
+            #取1位置上的平均
+            z_enc = z_enc.view(bs, cl, np, self.d_model)
+            z_enc = z_enc.mean(2)
+            # z_enc = z_enc.view(bs, cl, self.d_model)
             #local 特征，日期特征和全局特征进行融合
-            z_enc_out = z_enc_out + self.TemporalEmbedding(enc_mark)
+            z_enc_out = z_enc + self.TemporalEmbedding(enc_mark)
+            capacity = torch.cat([capacity.unsqueeze(-1),torch.zeros(bs,self.output_len,1).to(capacity.device)],dim = 1)
+            ##capacity_mean复制
             
-            #基于里程的trend
-            trend = self.dec_emb(dec_in)
-            energe_trend = self.output_mile(trend)[:,self.input_len:,:]
-
-            
-            #基于季节自回归的预测 
-            season = prior.view(bs,cl,-1)-trend[:,:self.input_len,:]
-            AR_input = torch.cat([season, torch.zeros(bs,output_len,self.d_model).to(season.device)], dim=1)
-            AR_out = self.decoder_AR(AR_input.transpose(0, 1),AR_input.transpose(0, 1)).transpose(0, 1)[:,self.input_len:,:]
-            AR_out = self.output_AR(AR_out)[:,self.input_len:,:]
-            
-        
-            #基于时间和过往变量的浮动预测
-            dec_mark = self.TemporalEmbedding(dec_mark)
+            capacit = self.cap_project(capacity)
+            dec_mark = self.TemporalEmbedding(dec_mark)+self.dec_emb(dec_in)+ capacit
             dec_out = self.decoder(dec_mark.transpose(0, 1), z_enc_out.transpose(0, 1)).transpose(0, 1)
-            dec_out =self.output_dec(dec_out)
+            #前后拼接
+            # capacity = self.cap_project(capacity)
+            # feature = self.feature_fuison(capacity.unsqueeze(-1), dec_out[:,-self.output_len:,:])+capacity
+            feature = self.Z_project(dec_out)[:,-self.output_len:,0]
+            # mil = self.mil_project(mil)[:,-self.output_len:,0]
             
+            y =  capacity_mean+feature
 
-            
-            y = energe_trend + dec_out + AR_out
-            
             if self.y_range:
                 y = SigmoidRange(*self.y_range)(y)
             
-            return y.squeeze(-1)
+            return y
 
+
+class AttentionFeatureFusion(nn.Module):
+    def __init__(self, input_dim1, input_dim2, fusion_dim):
+        super(AttentionFeatureFusion, self).__init__()
+        self.fc1 = nn.Linear(input_dim1, fusion_dim)
+        self.fc2 = nn.Linear(input_dim2, fusion_dim)
+        self.LN = nn.LayerNorm(fusion_dim)
+        self.attention = nn.Sequential(
+            nn.Linear(2*fusion_dim, 2*fusion_dim),
+            nn.Tanh(),
+            nn.Linear(2*fusion_dim, 1),
+            nn.Softmax(dim=1)
+            )
+    def forward(self, x1, x2):
+        # x1 shape: [batch_size, ts,input_dim1]
+        # x2 shape: [batch_size, ts,input_dim2]
+        x1 = self.LN(self.fc1(x1))  # shape: [batch_size, ts,fusion_dim]
+        x2 = self.LN(self.fc2(x2))  # shape: [batch_size, ts,fusion_dim]
+        #对x1和x2进行拼接.从fusion_dim变成2*fusion_dim 
+        x = torch.cat([x1, x2], dim=2)  # shape: [batch_size,ts, 2*fusion_dim]
+        attention_weights = self.attention(x)  # shape: [batch_size, num_features, 1]
+        fused_features = torch.sum(attention_weights * x, dim=2)  # shape: [batch_size, fusion_dim]
+        return fused_features
+
+
+class DistrubutionOutput_Layer(nn.Module):
+    def __init__(self, d_model, distr_output: DistributionOutput):
+        super().__init__()
+        
+        self.distr_output = distr_output
+        self.param_proj = distr_output.get_args_proj(d_model)
+
+    def forward(self, x):
+        distr_args = self.param_proj(x)
+        return self.distr_output.distribution(distr_args)
+    
 
 class FFN(nn.Module):
     """基于位置的前馈网络"""
@@ -205,46 +245,6 @@ class FFN(nn.Module):
     def forward(self, X):
         return self.dense2(self.dropout(self.relu(self.dense1(X))))
     
-class Prior_Attention_Pooler(nn.Module):
-    def __init__(self, d_model,d_ff, target_dim, dropout=0, output_attention_flag=False, factor=5, scale=None,
-                 attention_dropout=0):
-        super(Prior_Attention_Pooler, self).__init__()
-        self.input_dim = d_model
-        self.output_dim = target_dim
-        self.output_attention_flag = output_attention_flag
-        self.factor = factor
-        self.scale = scale
-        self.attention_dropout = attention_dropout
-        self.dropout = nn.Dropout(dropout)
-        self.attention = AttentionLayer(
-            FullAttention(mask_flag=False, output_attention=True,
-                          factor=self.factor, scale=self.scale, attention_dropout=self.attention_dropout),
-            d_model=self.input_dim,
-            n_heads=4
-        )
-        self.FNN = FFN(d_model, d_ff, d_model, dropout)
-        self.LN = nn.LayerNorm(d_model)
-        self.linear = nn.Linear(d_model, target_dim)
-        self.y_range = [0,1]   
-    def forward(self, x, prior, attn_mask=None):
-        x = self.LN(x)
-        #增加一个维度
-        prior = prior.unsqueeze(1)
-        x, attn = self.attention(
-            queries=prior, keys=x, values=x,
-            attn_mask=attn_mask
-        )
-
-        x = self.LN(x)
-        x = self.dropout(self.FNN(x))+x
-        x = x.squeeze(1)
-        x = self.linear(x)
-        if self.y_range: x = SigmoidRange(*self.y_range)(x)
-        if self.output_attention_flag:
-            return x, attn
-        else:
-            return x
-
 
 class RegressionHead(nn.Module):
     def __init__(self, n_samples, d_model, output_dim, head_dropout, y_range=None,pooler_type="lastN"):
@@ -303,6 +303,46 @@ class ClassificationHead(nn.Module):
         x = self.dropout(x)
         y = self.linear(x)         # y: bs x n_classes
         return y
+    
+class Prior_Attention_Pooler(nn.Module):
+    def __init__(self, d_model,d_ff, target_dim, dropout=0, output_attention_flag=False, factor=5, scale=None,
+                 attention_dropout=0):
+        super(Prior_Attention_Pooler, self).__init__()
+        self.input_dim = d_model
+        self.output_dim = target_dim
+        self.output_attention_flag = output_attention_flag
+        self.factor = factor
+        self.scale = scale
+        self.attention_dropout = attention_dropout
+        self.dropout = nn.Dropout(dropout)
+        self.attention = AttentionLayer(
+            FullAttention(mask_flag=False, output_attention=True,
+                          factor=self.factor, scale=self.scale, attention_dropout=self.attention_dropout),
+            d_model=self.input_dim,
+            n_heads=4
+        )
+        self.FNN = FFN(d_model, d_ff, d_model, dropout)
+        self.LN = nn.LayerNorm(d_model)
+        self.linear = nn.Linear(d_model, target_dim)
+        self.y_range = [0,1]   
+    def forward(self, x, prior, attn_mask=None):
+        x = self.LN(x)
+        #增加一个维度
+        prior = prior.unsqueeze(1)
+        x, attn = self.attention(
+            queries=prior, keys=x, values=x,
+            attn_mask=attn_mask
+        )
+
+        x = self.LN(x)
+        x = self.dropout(self.FNN(x))+x
+        x = x.squeeze(1)
+        x = self.linear(x)
+        if self.y_range: x = SigmoidRange(*self.y_range)(x)
+        if self.output_attention_flag:
+            return x, attn
+        else:
+            return x
 
 
 class PredictionHead(nn.Module):
@@ -362,29 +402,6 @@ class PretrainHead_regression(nn.Module):
         x = self.projection( self.dropout(x) )      # [bs x nvars x num_patch x patch_len]
                                                  # [bs x num_patch x nvars x patch_len]
         return x
-
-
-class AttentionAggregation(nn.Module):
-    def __init__(self, input_dim):
-        super().__init__()
-        self.W_Q = nn.Linear(input_dim, input_dim)
-        self.W_K = nn.Linear(input_dim, input_dim)
-        self.W_V = nn.Linear(input_dim, input_dim)
-        
-    def forward(self, x):
-        # x: (batch_size, patch_len, input_dim)
-        Q = self.W_Q(x)  # (batch_size, patch_len, input_dim)
-        K = self.W_K(x)  # (batch_size, patch_len, input_dim)
-        V = self.W_V(x)  # (batch_size, patch_len, input_dim)
-
-        # Calculate attention scores
-        scores = torch.bmm(Q, K.transpose(1, 2))  # (batch_size, patch_len, patch_len)
-        attention = nn.functional.softmax(scores, dim=-1)  # (batch_size, patch_len, patch_len)
-
-        # Apply attention to values
-        out = torch.bmm(attention, V)  # (batch_size, patch_len, input_dim)
-        out = out.mean(dim=1)  # (batch_size, input_dim)
-        return out
 
 
 class PretrainHead_constrat(nn.Module):
@@ -565,7 +582,7 @@ if __name__ == '__main__':
     prior = torch.zeros(3,32,1) 
     x_dec = torch.ones(3,44,1)
     x_mark = torch.ones(3,32,4)
-    dec_mark = torch.ones(3,12,4)
+    dec_mark = torch.ones(3,44,4)
     model = NervFormer(c_in=4,c_in_dec =1,
                 target_dim=1,
                 patch_len=100,
@@ -580,6 +597,8 @@ if __name__ == '__main__':
                 act='relu',
                 head_type='prior_pooler',
                 res_attention=False,
-                input_len = 32
+                input_len = 32,
+                prob_output=True,
+                norm='LayerNorm',
                 )        
     print(model.forward(x,prior,x_dec,x_mark,dec_mark).shape)
