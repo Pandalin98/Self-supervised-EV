@@ -259,12 +259,13 @@ class PowerBatteryData(Dataset):
         keys_ori = list(self.df_raw.keys())
         # keys_ori.sort()
         if self.split == 'train':
-            keys = keys_ori[:self.train_cars+self.val_cars]
+            keys = keys_ori
+            # keys = keys_ori[:self.train_cars+self.val_cars]
         elif self.split == 'val':
-            keys = keys_ori[self.train_cars+self.val_cars:]
-        elif self.split == 'test':
-            keys = keys_ori[self.train_cars+self.val_cars:]
-        else:
+            keys = keys_ori[self.train_cars:self.train_cars+self.val_cars] 
+        elif self.split == 'test':  
+            keys = keys_ori[self.train_cars+self.val_cars:] 
+        elif self.split == 'pretrain':
             keys = keys_ori
         #逐个车辆开始构造
         for key in keys:
@@ -364,8 +365,8 @@ class PowerBatteryData(Dataset):
         #     dict['label'] = data['fixed_capacity'].squeeze(-1)
         # if self.down_task == 'interval_predict':
         #     dict['label'] = data['charge_energy'].squeeze(-1)
-        # dict['label'] = data['charge_energy'].squeeze(-1)s
-        dict['label'] = data['charge_energy'].squeeze(-1)
+        # dict['label'] = data['charge_energy'].squeeze(-1)
+        dict['label'] = data['fixed_capacity'].squeeze(-1)
 
         return dict
 

@@ -158,7 +158,7 @@ def data_processing(read_path,write_path):
             # 在feature_data中增加一列，对应的charge_energy和smoothed_capacity
             for i in range(len(charge_list)):
                 feature_data.loc[feature_data['charge_energy'] == charge_list[i], 'fixed_capacity'] = smoothed_capacity[i]
-            feature_data = feature_data[feature_data['charge_energy'].isin(energy_data['charge_energy'])]
+            # feature_data = feature_data[feature_data['charge_energy'].isin(energy_data['charge_energy'])]
             if not os.path.exists(write_path):
                 os.makedirs(write_path)
             output_path = os.path.join(write_path, '{}_output.parquet'.format(car_id))

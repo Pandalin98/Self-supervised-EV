@@ -59,6 +59,7 @@ class NervFormer(nn.Module):
         input_len: int = 32,
         output_len: int = 12,
         prob_output = False,
+        output_representation = False,
         
         distr_output: DistributionOutput = StudentTOutput(),
         **kwargs
@@ -108,7 +109,7 @@ class NervFormer(nn.Module):
         )
         
 
-        
+        self.output_representation = output_representation
         self.output_attention = output_attention
         self.TemporalEmbedding = TemporalEmbedding(d_model=d_model)
         
@@ -123,22 +124,14 @@ class NervFormer(nn.Module):
             self.head_re = PretrainHead_regression(d_model, patch_len, self.n_vars, head_dropout)
             self.head_cons_z = PretrainHead_constrat(d_model)
             self.head_cons_prior = PretrainHead_constrat(d_model)
-        elif head_type == "regression":
-            self.head = RegressionHead('mean', d_model, target_dim, head_dropout, y_range)
-        elif head_type == "classification":
-            self.head = ClassificationHead(self.n_vars, d_model, target_dim, head_dropout)
         
-        # self.feature_fuison = AttentionFeatureFusion(1, d_model, d_model)
-        
-        #容量投影
-        self.cap_project = nn.Linear(1, d_model)
-
-        # self.cap_project = nn.Linear(self.input_len, self.output_len)
+        # 自回归投影
+        self.cap_project = nn.Linear(self.input_len, self.output_len)
         #表征投影
         self.Z_project = nn.Linear(d_model, 1)
-        
-        # self.distr_output = DistrubutionOutput_Layer(12,distr_output)
-        # self.prob_output = prob_output
+        #自回归dropout
+        self.head_dropout = nn.Dropout(head_dropout)
+        self.debug =False
         
     def forward(self, enc_in, prior, dec_in, enc_mark,dec_mark):
         ##在第二维度取均值
@@ -146,12 +139,11 @@ class NervFormer(nn.Module):
         bs, cl, np, fl = enc_in.shape  
         enc_in = enc_in.view(bs * cl, np, fl)
         ##dec_in 增加一个维度，在最后
-        _,full_len,_= dec_in.shape
         capacity = prior[:,:,-1]
         capacity_mean = capacity.mean(1, keepdim=True).detach()
         capacity = capacity - capacity_mean
-        # stdev = torch.sqrt(torch.var(capacity, dim=1, keepdim=True, unbiased=False) + 1e-5)
-        # capacity = capacity / stdev
+        stdev = torch.sqrt(torch.var(capacity, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        capacity = capacity / stdev
         #encoder part
         if self.head_type == "pretrain":
             prior = self.prior_projection(prior)
@@ -162,37 +154,23 @@ class NervFormer(nn.Module):
             return re, con1, con2
         else:
             z_enc = self.backbone(enc_in)
-            # if self.head_type == "prior_pooler":
-            #     prior = prior.view(bs * cl, self.prior_dim)
-            #     prior = self.prior_projection(prior)
-            #     z_enc_out = self.head(z_enc, prior)
-            # else:
-            #     z_enc_out = self.head(z_enc)
                         
         #decoder part
-            #取1位置上的平均
-            z_enc = z_enc.view(bs, cl, np, self.d_model)
-            z_enc = z_enc.mean(2)
-            # z_enc = z_enc.view(bs, cl, self.d_model)
+            #Encoder特征融合
+            z_enc = z_enc.view(bs, cl, np, self.d_model).mean(2)
             #local 特征，日期特征和全局特征进行融合
             z_enc_out = z_enc + self.TemporalEmbedding(enc_mark)
-            capacity = torch.cat([capacity.unsqueeze(-1),torch.zeros(bs,self.output_len,1).to(capacity.device)],dim = 1)
-            ##capacity_mean复制
-            
-            capacit = self.cap_project(capacity)
-            dec_mark = self.TemporalEmbedding(dec_mark)+self.dec_emb(dec_in)+ capacit
+            dec_mark = self.TemporalEmbedding(dec_mark)+self.dec_emb(dec_in)
             dec_out = self.decoder(dec_mark.transpose(0, 1), z_enc_out.transpose(0, 1)).transpose(0, 1)
-            #前后拼接
-            # capacity = self.cap_project(capacity)
-            # feature = self.feature_fuison(capacity.unsqueeze(-1), dec_out[:,-self.output_len:,:])+capacity
-            feature = self.Z_project(dec_out)[:,-self.output_len:,0]
-            # mil = self.mil_project(mil)[:,-self.output_len:,0]
-            
-            y =  capacity_mean+feature
-
-            if self.y_range:
-                y = SigmoidRange(*self.y_range)(y)
-            
+            feature = self.Z_project(dec_out)[:,-self.output_len:,0]*stdev
+            #capacity_自回归
+            capacity = self.head_dropout(self.cap_project(capacity))*stdev+capacity_mean
+            y =  capacity+feature
+        if self.output_representation:
+            return y, z_enc
+        elif self.debug is True:
+            return y, feature, capacity
+        else:
             return y
 
 

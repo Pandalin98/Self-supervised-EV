@@ -10,3 +10,7 @@ result_predict/
 *.html
 result/
 修正容量结果文件/
+结果文件/
+*.csv
+*.npy
+*.ipynb

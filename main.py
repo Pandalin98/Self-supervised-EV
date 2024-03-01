@@ -47,7 +47,7 @@ parser.add_argument('--dist',type=bool,default=False,help='distrubuted training'
 parser.add_argument('--revin', type=int, default=0, help='reversible instance normalization')
 # Model args
 parser.add_argument('--n_layers', type=int, default=4, help='number of Transformer layers')
-parser.add_argument('--n_layers_dec', type=int, default=2, help='Transformer d_ff')
+parser.add_argument('--n_layers_dec', type=int, default=1, help='Transformer d_ff')
 parser.add_argument('--prior_dim', type=int, default=6, help='dim of prior information')
 parser.add_argument('--n_heads', type=int, default=16, help='number of Transformer heads')
 parser.add_argument('--d_model', type=int, default=512, help='Transformer d_model')
@@ -449,7 +449,7 @@ if __name__ == '__main__':
             #根据device_id选择设备
             model.to('cuda')
             if args.is_linear_probe:
-                model = transfer_weights('/data/home/ps/WYL/琶洲新能源电池比赛-正式代码/saved_models/Power-Battery/masked_patchtst/based_model/linear_probe_time2024-01-24-11-47-37_ol192_patch1000_stride1000_epochs-finetune200_model1_n_layer4_n_dec1_n_head16_d_model512_dropout0.15_head_dropout0.05.pth',model)
+                model = transfer_weights('/data/home/ps/WYL/琶洲新能源电池比赛-正式代码/saved_models/Power-Battery/masked_patchtst/based_model/linear_probe_time2024-02-23-04-03-33_ol192_patch1000_stride1000_epochs-finetune200_model1_n_layer4_n_dec2_n_head16_d_model512_dropout0.15_head_dropout0.05.pth',model)
                 print('load linear_probe model')
             if args.is_finetune:
                 model = transfer_weights(args.save_path+args.save_finetuned_model+'.pth',model)
