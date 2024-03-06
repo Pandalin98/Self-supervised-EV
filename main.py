@@ -10,11 +10,11 @@ from src.learner import Learner, transfer_weights
 from src.callback.tracking import *
 from src.callback.patch_mask import *
 from src.callback.transforms import *
+from src.callback.scheduler import LRFinderCB
 from src.metrics import *
 from src.metrics import rmse,mae,REP
 from src.basics import set_device,set_seed
 from src.datautils import *
-
 import datetime 
 import argparse
 import joblib
@@ -46,27 +46,27 @@ parser.add_argument('--dist',type=bool,default=False,help='distrubuted training'
 # RevIN
 parser.add_argument('--revin', type=int, default=0, help='reversible instance normalization')
 # Model args
-parser.add_argument('--n_layers', type=int, default=4, help='number of Transformer layers')
+parser.add_argument('--n_layers', type=int, default=3, help='number of Transformer layers')
 parser.add_argument('--n_layers_dec', type=int, default=1, help='Transformer d_ff')
 parser.add_argument('--prior_dim', type=int, default=6, help='dim of prior information')
 parser.add_argument('--n_heads', type=int, default=16, help='number of Transformer heads')
 parser.add_argument('--d_model', type=int, default=512, help='Transformer d_model')
-parser.add_argument('--dropout', type=float, default=0.15, help='Transformer dropout')
+parser.add_argument('--dropout', type=float, default=0.2, help='Transformer dropout')
 parser.add_argument('--head_dropout', type=float, default=0.05, help='head dropout')
 parser.add_argument('--input_len', type=int, default=96, help='input time series length')
-parser.add_argument('--output_len', type=int, default=24, help='output time series length')
+parser.add_argument('--output_len', type=int, default=192, help='output time series length')
 # Patch
 parser.add_argument('--patch_len', type=int, default=1000, help='patch length')
-parser.add_argument('--stride', type=int, default=True, help='stride between patch')
+parser.add_argument('--stride', type=int, default=1000, help='stride between patch')
 parser.add_argument('--stride_ratio', type=float, default=1.0, help='stride between patch')#head args
 # Pretrain task
-parser.add_argument('--mask_ratio', type=float, default=0.4, help='masking ratio for the input')
-parser.add_argument('--recon_weight', type=float, default=0.5, help='input dimension')
-parser.add_argument('--kl_temperature', type=float, default=0.1, help='input dimension')
+parser.add_argument('--mask_ratio', type=float, default=0.5, help='masking ratio for the input')
+parser.add_argument('--recon_weight', type=float, default=0.3, help='input dimension')
+parser.add_argument('--kl_temperature', type=float, default=0.5, help='input dimension')
 # Optimization args
-parser.add_argument('--n_epochs_pretrain', type=int, default=300, help='number of pre-training epochs')
+parser.add_argument('--n_epochs_pretrain', type=int, default=400, help='number of pre-training epochs')
 parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
-parser.add_argument('--n_epochs_finetune', type=int, default=200, help='number of finetuning epochs')
+parser.add_argument('--n_epochs_finetune', type=int, default=400, help='number of finetuning epochs')
 parser.add_argument('--head_epochs_ratio',type=float,default=0.05,help='ratio of head epochs')
 # model id to keep track of the number of models saved
 parser.add_argument('--pretrained_model_id', type=int, default=1, help='id of the saved pretrained model')
@@ -82,8 +82,8 @@ args = parser.parse_args()
 args.stride = int(args.patch_len * args.stride_ratio)
 args.dist = False
 print('args:', args)
-args.pretrained_model = 'patchtst_pretrained_dataset'+str(args.dset_pretrain)+'_patch'+str(args.patch_len) + '_stride'+str(args.stride) + '_epochs-pretrain' + str(args.n_epochs_pretrain) + '_mask' + str(args.mask_ratio)  + '_model' + str(args.pretrained_model_id)
-args.save_path = 'saved_models/' + args.dset_pretrain + '/masked_patchtst/' + args.model_type + '/'
+args.pretrained_model = 'patchtst_pretrained_dataset'+str(args.dset_pretrain)+'_patch'+str(args.patch_len) + '_stride'+str(args.stride) + '_epochs-pretrain' + str(args.n_epochs_pretrain) + '_mask' + str(args.mask_ratio)+'_kl'+str(args.kl_temperature) + '_recon_weight'+str(args.recon_weight)+'_model' + str(args.pretrained_model_id)
+args.save_path = 'saved_models/' + args.dset_pretrain + '/masked_patchtst/' + args.model_type +'/'
 if not os.path.exists(args.save_path): os.makedirs(args.save_path)
 
 time = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -209,7 +209,7 @@ def finetune_func(dls,lr=args.lr):
     cbs = [
                  PatchCB(patch_len=args.patch_len, stride=args.stride),
          SaveModelCB(monitor='valid_loss', fname=args.save_finetuned_model, path=args.save_path),
-                  EarlyStoppingCB(monitor='valid_loss',patient=10)
+                  EarlyStoppingCB(monitor='valid_loss',patient=20)
 
         ]
     # define learner
@@ -243,13 +243,13 @@ def linear_probe_func(dls,lr=args.lr):
     # get loss
     # get callbacks
     if dls.valid is not None:
-        monitor  = 'valid_loss'
+        monitor  = 'test_loss'
     else:
         monitor = 'train_loss'
     cbs = [
          PatchCB(patch_len=args.patch_len, stride=args.stride),
          SaveModelCB(monitor=monitor, fname=args.save_linear_probe_model, path=args.save_path),
-         EarlyStoppingCB(monitor=monitor,patient=10)
+         EarlyStoppingCB(monitor=monitor,patient=20)
         ]
     # define learner
     learn = Learner(dls, model, 

@@ -259,7 +259,7 @@ class PowerBatteryData(Dataset):
         keys_ori = list(self.df_raw.keys())
         # keys_ori.sort()
         if self.split == 'train':
-            keys = keys_ori
+            keys = keys_ori[:self.train_cars] 
             # keys = keys_ori[:self.train_cars+self.val_cars]
         elif self.split == 'val':
             keys = keys_ori[self.train_cars:self.train_cars+self.val_cars] 

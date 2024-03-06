@@ -107,12 +107,12 @@ class NervFormer(nn.Module):
             if norm == 'BatchNorm'
             else nn.LayerNorm(d_model)
         )
-        
-
+        self.output_len = output_len
         self.output_representation = output_representation
         self.output_attention = output_attention
         self.TemporalEmbedding = TemporalEmbedding(d_model=d_model)
-        
+        self.decoder_project = nn.Linear(d_model*(input_len), output_len)
+
         # Head
         self.n_vars = c_in
         self.head_type = head_type
@@ -128,7 +128,7 @@ class NervFormer(nn.Module):
         # 自回归投影
         self.cap_project = nn.Linear(self.input_len, self.output_len)
         #表征投影
-        self.Z_project = nn.Linear(d_model, 1)
+        # self.Z_project = nn.Linear(d_model, 1)
         #自回归dropout
         self.head_dropout = nn.Dropout(head_dropout)
         self.debug =False
@@ -160,9 +160,13 @@ class NervFormer(nn.Module):
             z_enc = z_enc.view(bs, cl, np, self.d_model).mean(2)
             #local 特征，日期特征和全局特征进行融合
             z_enc_out = z_enc + self.TemporalEmbedding(enc_mark)
-            dec_mark = self.TemporalEmbedding(dec_mark)+self.dec_emb(dec_in)
-            dec_out = self.decoder(dec_mark.transpose(0, 1), z_enc_out.transpose(0, 1)).transpose(0, 1)
-            feature = self.Z_project(dec_out)[:,-self.output_len:,0]*stdev
+            # dec_mark = self.TemporalEmbedding(dec_mark)+self.dec_emb(dec_in)
+            # dec_out = self.decoder(dec_mark.transpose(0, 1), z_enc_out.transpose(0, 1)).transpose(0, 1)
+            
+            
+            dec_out = z_enc_out.reshape(bs, cl*self.d_model)
+            # dec_out = self.decoder(dec_mark.transpose(0, 1), z_enc_out.transpose(0, 1)).transpose(0, 1)
+            feature = self.decoder_project(dec_out)*stdev
             #capacity_自回归
             capacity = self.head_dropout(self.cap_project(capacity))*stdev+capacity_mean
             y =  capacity+feature

@@ -16,6 +16,8 @@ import numpy as np
 from sklearn.base import BaseEstimator
 import torch.nn.functional as F
 import time
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+
 class Learner(GetAttr):
     """
     A high-level PyTorch module for training and fine-tuning deep learning models.
@@ -150,7 +152,6 @@ class Learner(GetAttr):
         if not self.dls.valid: do_valid = False
         if cbs: self.add_callbacks(cbs)
         if lr: self.opt = self.opt_func(self.model.parameters(), lr) 
-
         self('before_fit')
         try:
             self.dl = self.dls.train
@@ -196,12 +197,12 @@ class Learner(GetAttr):
     def fit_downstreams(self, n_epochs,loss_func, lr_max=None, lr=None, cbs=None, do_valid=True,pct_start=0.3):
         " fit the model to the label target "        
         self.lr_max = lr_max if lr_max else self.lr
-        self.add_callback( OneCycleLR(lr_max=self.lr_max, pct_start=pct_start))
+        # self.add_callback( OneCycleLR(lr_max=self.lr_max, pct_start=pct_start))
         self.n_epochs = n_epochs
         if not self.dls.valid: do_valid = False
         if cbs: self.add_callbacks(cbs)
         if lr: self.opt = self.opt_func(self.model.parameters(), lr) 
-
+        scheduler = ReduceLROnPlateau(self.opt, mode='min', factor=0.5, patience=2, verbose=True, threshold=0.0001, threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-08)
         self('before_fit')
         try:
             self.dl = self.dls.train
@@ -228,7 +229,9 @@ class Learner(GetAttr):
                     self('after_batch_train')  
                 self('after_epoch_train')               # if self.dls.valid:                    
                 if do_valid: self.epoch_validate(),self.epoch_test() 
-                                  
+                scheduler.step(self.recorder['train_loss'][-1])
+                current_lr = self.opt.param_groups[0]['lr']
+                print(f'Epoch {self.epoch+1}, Learning rate: {current_lr}')
                 self('after_epoch')                 
         except KeyboardInterrupt: pass 
         self('after_fit')
@@ -265,10 +268,10 @@ class Learner(GetAttr):
         if not base_lr: base_lr = self.lr
         print('Finetune the head')
         self.freeze()
-        self.fit_downstreams(n_epochs,loss_func=loss_func, lr_max=base_lr, pct_start=pct_start)
+        self.fit_downstreams(n_epochs,loss_func=loss_func, lr_max=base_lr, lr=base_lr,pct_start=pct_start)
     
 
-    def lr_finder(self,task_flag, start_lr=1e-5, end_lr=1e-3, num_iter=100, step_mode='exp', show_plot=False, suggestion='valley',loss_func=None):                
+    def lr_finder(self,task_flag, start_lr=1e-5, end_lr=1e-2, num_iter=100, step_mode='exp', show_plot=False, suggestion='valley',loss_func=None):                
         """
         find the learning rate
         """

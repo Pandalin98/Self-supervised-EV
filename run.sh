@@ -1,14 +1,18 @@
 
-# python data_processing.py 
+# # python data_processing.py 
+# python main.py \
+#       --is_pretrain 0 \
+#       --output_len  24
+# python main.py \
+#       --is_pretrain 0 \
+#       --output_len  48
+# python main.py \
+#       --is_pretrain 0 \
+#       --output_len  96
 python main.py \
-      --output_len  24
-python main.py \
-      --output_len  48
-python main.py \
-      --output_len  96
-python main.py \
+      --device 1 \
+      --is_pretrain 0 \
       --output_len  192
-    # --device 0 \
     # --is_pretrain 0 \
     # --is_finetune 0 \
     # --is_linear_probe 1 \
