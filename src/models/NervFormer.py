@@ -109,9 +109,9 @@ class NervFormer(nn.Module):
         )
         self.output_len = output_len
         self.output_representation = output_representation
-        self.output_attention = output_attention
+        self.output_attention = store_attn
         self.TemporalEmbedding = TemporalEmbedding(d_model=d_model)
-        self.decoder_project = nn.Linear(d_model*(input_len), output_len)
+        self.decoder_project = nn.Linear(d_model*(input_len+output_len), output_len)
 
         # Head
         self.n_vars = c_in
@@ -132,7 +132,6 @@ class NervFormer(nn.Module):
         #自回归dropout
         self.head_dropout = nn.Dropout(head_dropout)
         self.debug =False
-        
     def forward(self, enc_in, prior, dec_in, enc_mark,dec_mark):
         ##在第二维度取均值
         
@@ -154,26 +153,30 @@ class NervFormer(nn.Module):
             return re, con1, con2
         else:
             z_enc = self.backbone(enc_in)
-                        
+            if self.output_attention:
+                atten_list = self.backbone.atten_list
         #decoder part
             #Encoder特征融合
             z_enc = z_enc.view(bs, cl, np, self.d_model).mean(2)
             #local 特征，日期特征和全局特征进行融合
             z_enc_out = z_enc + self.TemporalEmbedding(enc_mark)
-            # dec_mark = self.TemporalEmbedding(dec_mark)+self.dec_emb(dec_in)
+            dec_mark = self.TemporalEmbedding(dec_mark)+self.dec_emb(dec_in)
             # dec_out = self.decoder(dec_mark.transpose(0, 1), z_enc_out.transpose(0, 1)).transpose(0, 1)
             
             
-            dec_out = z_enc_out.reshape(bs, cl*self.d_model)
-            # dec_out = self.decoder(dec_mark.transpose(0, 1), z_enc_out.transpose(0, 1)).transpose(0, 1)
+            dec_out = self.decoder(dec_mark.transpose(0, 1), z_enc_out.transpose(0, 1)).transpose(0, 1)
+            dec_out = dec_out.reshape(bs, (cl+self.output_len)*self.d_model)
+
             feature = self.decoder_project(dec_out)*stdev
             #capacity_自回归
             capacity = self.head_dropout(self.cap_project(capacity))*stdev+capacity_mean
             y =  capacity+feature
         if self.output_representation:
-            return y, z_enc
+            return y, dec_out
         elif self.debug is True:
             return y, feature, capacity
+        elif self.output_attention:
+            return y, atten_list
         else:
             return y
 
@@ -442,7 +445,7 @@ class PatchTSTEncoder(nn.Module):
         self.encoder = TSTEncoder(d_model, n_heads, d_ff=d_ff, norm=norm, attn_dropout=attn_dropout, dropout=dropout,
                                    pre_norm=pre_norm, activation=act, res_attention=res_attention, n_layers=n_layers, 
                                     store_attn=store_attn)
-
+        self.store_attn = store_attn
     def forward(self, x) -> Tensor:          
         """
         x: tensor [bs xseries_len x nvars]
@@ -450,7 +453,10 @@ class PatchTSTEncoder(nn.Module):
         # Input encoding
         u =self.patch_embed(x)                                                # u:  [bs x cl x np  x d_model]
         ## encoding
-        z = self.encoder(u)                                                   # z: [bs x  cl x np  x d_model]
+        z = self.encoder(u)                   
+        # z: [bs x  cl x np  x d_model]
+        if self.store_attn:
+            self.atten_list = self.encoder.atten_list
         return z
     
     
@@ -466,18 +472,23 @@ class TSTEncoder(nn.Module):
                                                       activation=activation, res_attention=res_attention,
                                                       pre_norm=pre_norm, store_attn=store_attn) for i in range(n_layers)])
         self.res_attention = res_attention
-
+        self.store_attn = store_attn
     def forward(self, src:Tensor):
         """
         src: tensor [bs x q_len x d_model]
         """
+        atten_list = []
         output = src
         scores = None
         if self.res_attention:
             for mod in self.layers: output, scores = mod(output, prev=scores)
             return output
         else:
-            for mod in self.layers: output = mod(output)
+            if self.store_attn:
+                for mod in self.layers: 
+                    output = mod(output)
+                    atten_list.append(mod.attn)
+                self.atten_list = atten_list
             return output
 
 
@@ -582,5 +593,8 @@ if __name__ == '__main__':
                 input_len = 32,
                 prob_output=True,
                 norm='LayerNorm',
+                output_attention=True,
+                store_attn=True,
                 )        
-    print(model.forward(x,prior,x_dec,x_mark,dec_mark).shape)
+    out,attn = model.forward(x,prior,x_dec,x_mark,dec_mark)
+    print(out.shape)

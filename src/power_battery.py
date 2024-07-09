@@ -228,7 +228,7 @@ class PowerBatteryData(Dataset):
         hf5 = soc_propotion(df_list,SOCv=19)
             
         ##6.充电容量
-        hf6 = [df['fixed_capacity'][0] for df in df_list]
+        hf6 = [df['charge_energy'][0] for df in df_list]
         
         #将hf1-hf6横向拼接
         HF = np.column_stack((hf1,hf2,hf3,hf4,hf5,hf6))
@@ -366,7 +366,7 @@ class PowerBatteryData(Dataset):
         # if self.down_task == 'interval_predict':
         #     dict['label'] = data['charge_energy'].squeeze(-1)
         # dict['label'] = data['charge_energy'].squeeze(-1)
-        dict['label'] = data['fixed_capacity'].squeeze(-1)
+        dict['label'] = data['charge_energy'].squeeze(-1)
 
         return dict
 

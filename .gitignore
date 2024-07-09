@@ -1,16 +1,7 @@
 data/
-saved_models/
-wandb/
-temp/
-plot/
-result_predict/
 ##忽略png格式的文件
 *.png
 *.pyc
 *.html
-result/
-修正容量结果文件/
-结果文件/
 *.csv
 *.npy
-*.ipynb
